@@ -1,3 +1,6 @@
+import numpy as np
+from numpy.random import random_sample
+
 print('Hello world.')
 
 # A = ['L', 'R']  # action state L == 'left'/curl according to right hand rule, R == 'right'/curl according to right hand rule
@@ -70,31 +73,79 @@ while max_delta > convergence_tol:
 
     Vs.update(Vs_temp)
     max_delta = max(delta.values())
-    print((max_delta, Vs))
-print((max_delta, Vs))
 del max_delta, delta, Vs_temp, s
 
 # ----- Optimize policy -----
-# while max(abs(pstar_new - pstar)) < convergence_tol_p:
-p_star = dict(p)
-for i in range(0, 10):
+convergence_tol_p = 0.001
+p_star = {'A': {'R': .5, 'L': .5}, 'C': {'R': .25, 'L': .75}, 'D': {'R': .75, 'L': .25}, 'B': {'R': .5, 'L': .5}}   #dict(p)
+max_delta = 10000
+while max_delta > convergence_tol_p:
+# for i in range(0, 10):
     Qsa = eval_Qsa(Vs, P, R, disc_rate)    # set current policy values
     p_star_new = dict.fromkeys(p_star.keys())
-    delta = dict.fromkeys(p_star.keys(), 0)
+    delta = dict.fromkeys(p_star.keys(), max_delta)
     for s in Qsa.keys():
-        # delta[s] = dict.fromkeys(Qsa[s].keys(),0)
         p_star_new[s] = dict.fromkeys(Qsa[s].keys(), 0)
 
         p_star_new[s][max(Qsa[s], key=Qsa[s].get)] = 1
 
-        C = {x: p_star_new[s][x] - p_star[s][x] for x in p_star_new[s] if x in p_star[s]}
-
-        delta[s][max(Qsa[s], key=Qsa[s].get)] = p_star_new[s][max(Qsa[s], key=Qsa[s].get)] - p[s][max(Qsa[s], key=Qsa[s].get)]
-    max_delta = max(delta.items(), key=lambda k: abs(k[1]))
+        delta_s_temp = {x: p_star_new[s][x] - p_star[s][x] for x in p_star_new[s] if x in p_star[s]}
+        delta[s] = max({k: abs(v) for k, v in delta_s_temp.items()}.values())
 
     p_star.update(p_star_new)
+    max_delta = max(delta.values())
+    del p_star_new, delta, delta_s_temp
+
+print('Optimal policy under known model (probabilities and rewards): ' + str(p_star))
+
+# ----- Model free methods -----
+def run_MCMC(s0_MCMC, length, P, R, p):
+    s = s0_MCMC
+    sN = list(s)  # store states
+    aN = list()  # store actions
+    rN = list() # store rewards
+    # Run an MC chain and store rewards
+    for i in range(0, length):
+        a = np.random.choice(a=list(p[s].keys()), size=1, replace=True, p=list(p[s].values()))[0]  # for current state s, draw action randomly from available options p[s].keys()  # p is policy but also specifies what actions are available in each state
+        # ---- THIS IS HIDDEN TO AGENT (specification of P and R) -----
+        s_prime = np.random.choice(a=list(P[s][a].keys()), size=1, replace=True, p=list(P[s][a].values()))[0]  # observe reward (return reward based on P distribution, which is hidden to agent but mimics what the agent would see if playing in the world
+        if s_prime == 'terminal':
+            r = R[s_prime]
+            sN.append(s_prime)
+            aN.append(a)
+            rN.append(r)
+            del a, s_prime, r
+            return sN, aN, rN
+        else:
+            r = R[s_prime][s]
+            sN.append(s_prime)
+            aN.append(a)
+            rN.append(r)
+            s = s_prime
+            del a, s_prime, r
+        # ----------------------------------
+    return sN, aN, rN
 
 
-print(p_star)
+def calc_MCMC_Vs(sK, rK, Vs_0, Vs_count0):
+    Vs = Vs_0
+    Vs_count = Vs_count0
+    for j in range(0, len(rK)):
+        s = sK[j]
+        Vs_count[s] = Vs_count[s] + 1
+        Vs[s] = Vs[s] + (1 / Vs_count[s]) * (sum(rK[j:len(rK)]) - Vs[s])
+    del s
+    return Vs, Vs_count
 
 
+max_k = 100     # maximum number of steps to take before terminating chain without reaching terminal node
+MCMC_N = 10000     # maximum number of chains to run
+Vs_MCMC = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+Vs_MCMC_count = dict.fromkeys(Vs, 0)
+for i in range(0, MCMC_N):
+    s0 = np.random.choice(list(p.keys()))       # randomly chosen starting state
+    sK, aK, rK = run_MCMC(s0, max_k, P, R, p)      # run single chain to terminal
+
+    Vs_MCMC, Vs_MCMC_count = calc_MCMC_Vs(sK, rK, Vs_MCMC, Vs_MCMC_count)    # evaluate single chain
+
+print('MCMC estimated Vs under given policy: ' + str(Vs_MCMC))
