@@ -99,6 +99,7 @@ while max_delta > convergence_tol_p:
 print('Optimal policy under known model (probabilities and rewards): ' + str(p_star))
 
 # ----- Model free methods -----
+# ------ MCMC Vs estimation
 def run_MCMC(s0_MCMC, length, P, R, p):
     s = s0_MCMC
     sN = list(s)  # store states
@@ -137,7 +138,6 @@ def calc_MCMC_Vs(sK, rK, Vs_0, Vs_count0):
     del s
     return Vs, Vs_count
 
-
 max_k = 100     # maximum number of steps to take before terminating chain without reaching terminal node
 MCMC_N = 10000     # maximum number of chains to run
 Vs_MCMC = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
@@ -147,5 +147,41 @@ for i in range(0, MCMC_N):
     sK, aK, rK = run_MCMC(s0, max_k, P, R, p)      # run single chain to terminal
 
     Vs_MCMC, Vs_MCMC_count = calc_MCMC_Vs(sK, rK, Vs_MCMC, Vs_MCMC_count)    # evaluate single chain
-
+del i
 print('MCMC estimated Vs under given policy: ' + str(Vs_MCMC))
+
+# ----- TD Vs estimation
+def calc_Vs_TD(r, s, s_prime, disc_rate, Vs_TD, Vs_TD_count):
+    return
+
+
+TD_V_max_k = 10000
+Vs_TD = {'A': 0, 'B': 0, 'C': 0, 'D': 0}
+Vs_TD_count = dict.fromkeys(Vs, 0)
+s = 'A'
+for k in range(0, TD_V_max_k):
+    Vs_TD_count[s] = Vs_TD_count[s] + 1
+    alpha = 1 / Vs_TD_count[s]
+    a = np.random.choice(a=list(p[s].keys()), size=1, replace=True, p=list(p[s].values()))[0]  # for current state s, draw action randomly from available options p[s].keys()  # p is policy but also specifies what actions are available in each state
+    # ---- THIS IS HIDDEN TO AGENT (specification of P and R) -----
+    # get reward and new state
+    s_prime = np.random.choice(a=list(P[s][a].keys()), size=1, replace=True, p=list(P[s][a].values()))[0]  # observe reward (return reward based on P distribution, which is hidden to agent but mimics what the agent would see if playing in the world # draw a
+
+    if s_prime == 'terminal':
+        r = R[s_prime]
+        Vs_TD[s] = (1 - alpha) * Vs_TD[s] + alpha * r  # update Vs
+        s = np.random.choice(a=list(p.keys()), size=1, replace=True)[0]
+    else:
+        r = R[s_prime][s]
+        Vs_TD[s] = (1 - alpha) * Vs_TD[s] + alpha * (r + disc_rate * Vs_TD[s_prime])  # update Vs
+        s = s_prime
+
+print(Vs_TD)
+
+# ---- Q-Learning
+Q = dict.fromkeys(p.keys(), 0)
+Q_count = dict.fromkeys(Q.keys(), 0)
+s = 'A'
+max_Q_iter = 1
+for j in range(0, max_Q_iter):
+    eval_Qsa(Vs_eqf, P_eqf, R_eqf, disc_rate_eqf)
