@@ -1,1 +1,1 @@
-# THIS LINE INTENTIONALLY LEFT BLANK
+print('Hello world')
