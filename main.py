@@ -71,6 +71,8 @@ class Hand:
         self.players = self.get_players()
         self.small_blind = self.get_small_blind()
         self.big_blind = self.get_big_blind()
+        self.cards = self.get_cards()
+        self.odds = self.get_odds()
         self.actions = self.get_actions()
         self.outcomes = self.get_outcomes()
 
@@ -82,7 +84,7 @@ class Hand:
             return None
 
     def get_players(self):
-        return self.hand_data.split(':')[-1].split('|')
+        return [x.rstrip() for x in self.hand_data.split(':')[-1].split('|')]
 
     def get_small_blind(self):
         try:
@@ -96,6 +98,30 @@ class Hand:
         except IndexError:
             pass
 
+    def get_cards(self):
+        try:
+            t_all_cards = self.hand_data.split(':')[3].split('|')
+            if len(t_all_cards) > len(self.players):
+                t_board_cards = t_all_cards[-1].split('/')
+                t_hole_cards = t_all_cards[:-1] + [t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
+                return {'hole_cards': dict(zip(self.players, t_hole_cards)), 'board_cards': t_board_cards}
+            else:
+                t_hole_cards = t_all_cards
+                return {'hole_cards': dict(zip(self.players, t_hole_cards))}
+        except IndexError:
+            return None
+
+    def get_odds(self):
+        # simplistic proxy - could be refined
+        try:
+            t_cards = self.cards['hole_cards']
+            premium_cards_f = {'A', 'K', 'Q', 'J'}
+            odds_dict_f = dict()
+            for k, v in t_cards.items():
+                odds_dict_f.update({k: {'both_hole_premium_cards': (v[0] in premium_cards_f) & (v[2] in premium_cards_f)}})
+            return odds_dict_f
+        except TypeError:
+            return None
 
     def get_actions(self):
         def get_round_action(round_actors_f, round_actions_f):
@@ -140,7 +166,7 @@ class Game:
 
     def parse_hands(self):
         hands_f = dict()
-        for t_hand in [x for x in self.data.split('\n') if x != '']:     # temp = self.data #####
+        for t_hand in [x for x in self.data.split('\n') if x != '']:
             t_hand_obj = Hand(t_hand)
             hands_f.update({t_hand_obj.number: t_hand_obj})
         return hands_f  # [Hand(x) for x in self.data.split('\n')]
@@ -178,8 +204,6 @@ class Game:
             if print_f:
                 print("WARNING: Different players for combined games %s and %s" % (self.number, game2.number))
                 print("Difference: %s" % self.combine_player_diff)
-                # print("Players in game %s: %s" % (self.number, self.players))
-                # print("Players in game %s: %s" % (game2.number, game2.players))
 
         self.hands.update(game2.hands)
         self.summarize_hands()
@@ -195,9 +219,31 @@ class Player:
         self.actions = None
         self.outcomes = None
         self.blinds = None
+        self.cards = None
+        self.odds = None
 
     def get_game_numbers(self, games_ff):
         return [x for x in games_ff.keys() if self.name in games_ff[x].players]
+
+    def get_game_cards(self, games_ff):
+        t_card_dict = dict()
+        for t_g_num in self.game_numbers:
+            t_g = games_ff[t_g_num]
+            t_hand_dict = dict()
+            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+                t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].cards['hole_cards'][self.name]})
+            t_card_dict.update({t_g_num: t_hand_dict})
+        return t_card_dict
+
+    def get_game_odds(self, games_ff):
+        t_odds_dict = dict()
+        for t_g_num in self.game_numbers:
+            t_g = games_ff[t_g_num]
+            t_hand_dict = dict()
+            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+                t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].odds[self.name]['both_hole_premium_cards']})
+            t_odds_dict.update({t_g_num: t_hand_dict})
+        return t_odds_dict
 
     def get_game_actions(self, games_ff):
         t_action_dict = dict()
@@ -241,6 +287,8 @@ class Player:
         self.actions = self.get_game_actions(games_f)
         self.outcomes = self.get_game_outcomes(games_f)
         self.blinds = self.get_blinds(games_f)
+        self.cards = self.get_game_cards(games_f)
+        self.odds = self.get_game_odds(games_f)
 
 
 # ----- process files
@@ -282,6 +330,7 @@ for p_name in all_players:
         pass
 del p_name
 
+
 # ----- RESEARCH -----
 # QUESTION : within game, what is the proportion of preflop folds following losing hand vs not losing hand? (discount hands where player is blind)
 # --- Create dataframe of all player data
@@ -293,7 +342,9 @@ def create_player_df(player_f):
                 t_records.append({'player': player_f.name, 'game': int(g_num), 'hand': int(h_num),
                                   'preflop_fold': h['preflop'] == 'f', 'outcome': player_f.outcomes[g_num][h_num],
                                   'big_blind': player_f.blinds[g_num][h_num]['big'],
-                                  'small_blind': player_f.blinds[g_num][h_num]['small']})
+                                  'small_blind': player_f.blinds[g_num][h_num]['small'],
+                                  'premium_hole': player_f.odds[g_num][h_num]
+                                  })
             except KeyError:
                 pass
 
@@ -303,13 +354,17 @@ def create_player_df(player_f):
     return df_f
 
 
-def behavior_test(df_f, success_field_name_f, denom_field_name_f):
-    n_prevloss_preflop_folds = sum((df_f[denom_field_name_f]) & (df_f[success_field_name_f]))
-    n_noprevloss_preflop_folds = sum((~df_f[denom_field_name_f]) & (df_f[success_field_name_f]))
-    n_prevloss = sum(df_f[denom_field_name_f])
-    n_noprevloss = sum(~df_f[denom_field_name_f])
-    t_p1, t_p2, t_z = prop_2samp_ind_large(n_prevloss_preflop_folds, n_noprevloss_preflop_folds, n_prevloss, n_noprevloss)
-    return {'p1': t_p1, 'n1': n_prevloss_preflop_folds, 'p2': t_p2, 'n2': n_noprevloss_preflop_folds, 'z': t_z}
+def behavior_test(df_f, success_field_name_f, sample_partition_field_name_f):
+    in_sample1_f = df_f[sample_partition_field_name_f]
+    in_sample2_f = ~df_f[sample_partition_field_name_f]
+    success_f = df_f[success_field_name_f]
+    n_sample1 = sum(in_sample1_f)
+    n_sample2 = sum(in_sample2_f)
+    n_sample1_success = sum(in_sample1_f & success_f)
+    n_sample2_success = sum(in_sample2_f & success_f)
+    t_p1, t_p2, t_z = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success, n1=n_sample1, n2=n_sample2)
+    return {'p1': t_p1, 'n1': n_sample1, 'p2': t_p2, 'n2': n_sample2, 'z': t_z}
+
 
 df = pd.DataFrame()
 for p in players:
@@ -318,16 +373,21 @@ del p
 
 # --- Conduct hypothesis test
 # Exclude select observations rows
-excl_cond1 = df.small_blind
-excl_cond2 = df.big_blind
-excl_cond3 = df.prev_outcome_loss.isnull()
-use_ind = df.loc[~(excl_cond1 | excl_cond2 | excl_cond3)].index
+excl_cond1 = df.small_blind     # less likely to fold if already have money in the pot
+excl_cond2 = df.big_blind       # less likely to fold if already have money in the pot
+excl_cond3 = df.prev_outcome_loss.isnull()  # first hand of game
+excl_cond4 = df.premium_hole    # got lucky with good hole cards no one folds
+use_ind = df.loc[~(excl_cond1 | excl_cond2 | excl_cond3 | excl_cond4)].index
 df_calc = df.loc[use_ind].reset_index()
 
 # Calculate test stats
-t_df = df_calc.groupby('player').apply(behavior_test, success_field_name_f='preflop_fold', denom_field_name_f='prev_outcome_loss')
+sample_partition_binary_field = 'prev_outcome_loss'
+success_event_binary_field = 'preflop_fold'
+t_df = df_calc.groupby('player').apply(behavior_test, success_field_name_f=success_event_binary_field, sample_partition_field_name_f=sample_partition_binary_field)
 df_prop_test = pd.DataFrame(list(t_df))
 df_prop_test['player'] = t_df.index
 del t_df
 
+print("Partitioning samples on %s and success event = '%s'." % (sample_partition_binary_field, success_event_binary_field))
+print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % (sample_partition_binary_field))
 print(df_prop_test)
