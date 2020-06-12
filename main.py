@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-
+from scipy.stats import norm
 
 # ---- Set parameters ----
 fd_data = os.path.join("..", "Data", "5H1AI_logs")  # location of data relative to code base path
@@ -16,7 +16,8 @@ def prop_2samp_ind_large(n1_success, n2_success, n1, n2):
     qhat = 1 - phat
     stdev_p1p2_diff = np.sqrt(phat * qhat * ((1 / n1) + (1 / n2)))
     z_f = (p1 - p2) / stdev_p1p2_diff
-    return p1, p2, z_f
+    p_f = round((1 - norm.cdf(abs(z_f)))*2, 4)
+    return p1, p2, z_f, p_f
 
 
 def extract_game_number(fn_f):
@@ -362,8 +363,8 @@ def behavior_test(df_f, success_field_name_f, sample_partition_field_name_f):
     n_sample2 = sum(in_sample2_f)
     n_sample1_success = sum(in_sample1_f & success_f)
     n_sample2_success = sum(in_sample2_f & success_f)
-    t_p1, t_p2, t_z = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success, n1=n_sample1, n2=n_sample2)
-    return {'p1': t_p1, 'n1': n_sample1, 'p2': t_p2, 'n2': n_sample2, 'z': t_z}
+    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success, n1=n_sample1, n2=n_sample2)
+    return {'p1': t_p1, 'n1': n_sample1, 'p2': t_p2, 'n2': n_sample2, 'z': t_z, 'pval': t_p}
 
 
 df = pd.DataFrame()
