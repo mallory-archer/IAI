@@ -324,6 +324,7 @@ class Player:
         self.cards = None
         self.odds = None
         self.stacks = None
+        self.looseness = None
 
     def get_game_numbers(self, games_ff):
         return [x for x in games_ff.keys() if self.name in games_ff[x].players]
@@ -404,6 +405,25 @@ class Player:
             t_stack_dict.update({t_g_num: t_hand_dict})
         return t_stack_dict
 
+    def calc_looseness(self, select_hands_ff=None):
+        # if no subset is prescribed for calculation use all available player data
+        if select_hands_ff is None:
+            select_hands_ff = dict()
+            for t_g_num in self.game_numbers:
+                select_hands_ff.update({t_g_num: list(self.actions[t_g_num].keys())})
+
+        t_hand_count = 0
+        t_voluntary_play_count = 0
+        for t_g_num, t_h_nums in select_hands_ff.items():
+            for t_h_num in t_h_nums:
+                t_hand_count += int((not any(self.blinds[t_g_num][t_h_num].values())))
+                try:    # if player is eliminated actions dictionary is empty
+                    t_voluntary_play_count += int((not any(self.blinds[t_g_num][t_h_num].values())) and
+                                                  (self.actions[t_g_num][t_h_num]['preflop'] == 'r' or self.actions[t_g_num][t_h_num]['preflop'] == 'c'))   # count hand if not blind and raised or called, #### pre-flop only configured
+                except KeyError:
+                    pass
+        return t_voluntary_play_count / t_hand_count, t_voluntary_play_count, t_hand_count
+
     def add_games_info(self, games_f):
         self.game_numbers = self.get_game_numbers(games_f)
         self.actions = self.get_game_actions(games_f)
@@ -412,6 +432,7 @@ class Player:
         self.cards = self.get_game_cards(games_f)
         self.odds = self.get_game_odds(games_f)
         self.stacks = self.get_stacks(games_f)
+        self.looseness, _, _ = self.calc_looseness()
 
     def print(self):
         print(json.dumps(self.__dict__, indent=4))
@@ -610,3 +631,38 @@ if add_const:
 else:
     sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=df_logistic[X_col_name].astype(float)).fit()
 print(sm_result.summary2())
+
+
+# ---- Comparison of traditional player style metrics -----
+def get_select_hands(df_f, true_cond_cols_f):
+    t_index = [True] * df_f.shape[0]
+    # filter dataframe to only include select sub-population based on condition columns
+    for t_col, t_cond in true_cond_cols_f.items():
+        t_index = (t_index & (df_f[t_col] == t_cond))
+    t_df = df_f.loc[t_index]
+
+    # retrieve games and hands for sub-population
+    select_hands_dict_f = dict()
+    for t_g_num in t_df['game'].unique():
+        select_hands_dict_f.update({str(t_g_num): [str(x) for x in t_df.loc[t_df['game'] == t_g_num, 'hand'].unique()]})
+    return select_hands_dict_f
+
+
+looseness_comp = dict()
+for p in players:
+    # excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
+    # excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
+    # excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
+    t_select_hands_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': True, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
+    t_select_hands_no_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': False, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
+
+    _, n1_success, n1 = p.calc_looseness(t_select_hands_prev_loss)
+    _, n2_success, n2 = p.calc_looseness(t_select_hands_no_prev_loss)
+    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success, n2_success, n1, n2)
+    looseness_comp.update({p.name: {'p1': t_p1, 'n1': n1_success, 'p2': t_p2, 'n2': n2_success, 'z': t_z, 'pval': t_p}})
+
+    del t_p1, t_p2, t_z, t_p, n1_success, n1, n2_success, n2
+
+print("Partitioning samples on %s and success event = '%s'." % ('prev_outcome_loss', 'voluntarily played hand (looseness)'))
+    print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome_loss'))
+    print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
