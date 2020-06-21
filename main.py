@@ -664,5 +664,82 @@ for p in players:
     del t_p1, t_p2, t_z, t_p, n1_success, n1, n2_success, n2
 
 print("Partitioning samples on %s and success event = '%s'." % ('prev_outcome_loss', 'voluntarily played hand (looseness)'))
-    print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome_loss'))
-    print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
+print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome_loss'))
+print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
+
+
+# ------ Fit prospect theory model -----
+import math
+
+
+class Option:
+    def __init__(self, name, outcomes):
+        self.name = name
+        self.outcomes = outcomes
+        self.value = None
+
+    def calc_value_function(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
+        def calc_vx(x_ff, alpha_ff, lamda_ff, beta_ff):
+            if x_ff >= 0:
+                return x_ff ** alpha_ff
+            if x_ff < 0:
+                return -lamda_ff * ((-x_ff) ** beta_ff)
+
+        def calc_pi(prob_ff, c_ff):
+            return (prob_ff ** c_ff) / (((prob_ff ** c_ff) + ((1 - prob_ff) ** c_ff)) ** (1 / c_ff))
+
+        value_f = 0
+        for _, t_outcome in self.outcomes.items():
+            value_f += calc_vx(t_outcome['payoff'], alpha_f, lambda_f, beta_f) * \
+                       calc_pi(t_outcome['prob'], gamma_f if t_outcome['payoff'] > 0 else delta_f)
+
+        self.value = value_f
+
+
+def calc_prob_options(values_f, phi_f):
+    # calc exponentiated values and add to get denominator
+    t_dict = dict()
+    t_denom = 0
+    for t_name_f, t_value_f in values_f.items():
+        t_dict.update({t_name_f: math.exp(phi_f * t_value_f)})
+        t_denom += t_dict[t_name_f]
+    # divide all values by denominator
+    for t_option_f, t_value_f in t_dict.items():
+        t_dict.update({t_option_f: t_value_f / t_denom})
+    return t_dict
+
+
+def calc_LL(player_f, select_hands_f, phi_f, option_values_f):
+    LL_f = 0
+    for t_g_num, t_h_nums in select_hands_f.items():
+        for t_h_num in t_h_nums:
+            try:
+                t_prob_options = calc_prob_options(option_values_f, phi_f)
+                t_select_prob = t_prob_options['fold'] if player_f.actions[t_g_num][t_h_num]['preflop'] == 'f' else \
+                t_prob_options['play']
+                LL_f += np.log(t_select_prob)
+            except KeyError:
+                pass
+    return LL_f
+
+# initial parameters
+t_alpha = 0.88
+t_lambda = 2.25
+t_beta = 0.88
+t_gamma = 0.61
+t_delta = 0.69
+t_phi = 0.5
+t_phi = 0.1
+t_select_hands = t_select_hands_prev_loss.copy()
+
+# ---- This needs to be moved inside to adapt to cards players is nolding
+options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}),
+           Option(name='fold', outcomes={'win': {'payoff': -10, 'prob': 0.5}, 'lose': {'payoff': 0, 'prob': 0.5}})]
+
+option_values = dict()
+for t_option in options:
+    t_option.calc_value_function(t_alpha, t_lambda, t_beta, t_gamma, t_delta)
+    option_values.update({t_option.name: t_option.value})
+# -----------------------
+
+LL = calc_LL(players[0], t_select_hands, t_phi, option_values)
