@@ -670,30 +670,8 @@ print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
 
 # ------ Fit prospect theory model -----
 import math
-
-
-class Option:
-    def __init__(self, name, outcomes):
-        self.name = name
-        self.outcomes = outcomes
-        self.value = None
-
-    def calc_value_function(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
-        def calc_vx(x_ff, alpha_ff, lamda_ff, beta_ff):
-            if x_ff >= 0:
-                return x_ff ** alpha_ff
-            if x_ff < 0:
-                return -lamda_ff * ((-x_ff) ** beta_ff)
-
-        def calc_pi(prob_ff, c_ff):
-            return (prob_ff ** c_ff) / (((prob_ff ** c_ff) + ((1 - prob_ff) ** c_ff)) ** (1 / c_ff))
-
-        value_f = 0
-        for _, t_outcome in self.outcomes.items():
-            value_f += calc_vx(t_outcome['payoff'], alpha_f, lambda_f, beta_f) * \
-                       calc_pi(t_outcome['prob'], gamma_f if t_outcome['payoff'] > 0 else delta_f)
-
-        self.value = value_f
+import random
+from statsmodels.base.model import GenericLikelihoodModel
 
 
 def calc_prob_options(values_f, phi_f):
@@ -709,37 +687,108 @@ def calc_prob_options(values_f, phi_f):
     return t_dict
 
 
-def calc_LL(player_f, select_hands_f, phi_f, option_values_f):
-    LL_f = 0
-    for t_g_num, t_h_nums in select_hands_f.items():
-        for t_h_num in t_h_nums:
-            try:
-                t_prob_options = calc_prob_options(option_values_f, phi_f)
-                t_select_prob = t_prob_options['fold'] if player_f.actions[t_g_num][t_h_num]['preflop'] == 'f' else \
-                t_prob_options['play']
-                LL_f += np.log(t_select_prob)
-            except KeyError:
-                pass
-    return LL_f
+class Option:
+    def __init__(self, name, outcomes):
+        self.name = name
+        self.outcomes = outcomes
+        self.value = None
+
+    def calc_value_function(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
+        def calc_vx(x_ff, alpha_ff, lambda_ff, beta_ff):
+            if x_ff >= 0:
+                return x_ff ** alpha_ff
+            if x_ff < 0:
+                return -lambda_ff * ((-x_ff) ** beta_ff)
+
+        def calc_pi(prob_ff, c_ff):
+            return (prob_ff ** c_ff) / (((prob_ff ** c_ff) + ((1 - prob_ff) ** c_ff)) ** (1 / c_ff))
+
+        value_f = 0
+        for _, t_outcome in self.outcomes.items():
+            # value_f += calc_vx(t_outcome['payoff'], alpha_f, lambda_f, beta_f) * \
+            #            calc_pi(t_outcome['prob'], gamma_f if t_outcome['payoff'] > 0 else delta_f)
+            value_f += calc_vx(t_outcome['payoff'], alpha_f, lambda_f, beta_f) * \
+                       calc_pi(t_outcome['prob'], gamma_f)  # one c parameter
+
+        self.value = value_f
+
+
+class ProspectModel(GenericLikelihoodModel):
+    def loglikeobs(self, params):
+        alpha_f = params[0]
+        lambda_f = params[1]
+        beta_f = params[2]
+        gamma_f = params[3]
+        delta_f = None
+        phi_f = 0.5
+
+        exp_val_win_f = 100
+        exp_prob_win_f = 0.6
+        val_loss_on_play_f = -100
+
+        # --- generate synthetic options
+        options_f = [[Option(name='play', outcomes={'win': {'payoff': exp_val_win_f, 'prob': exp_prob_win_f}, 'lose': {'payoff': val_loss_on_play_f, 'prob': 1 - exp_prob_win_f}}),
+                      Option(name='fold', outcomes={'win': {'payoff': -10, 'prob': 1}})] for x in range(0, len(self.endog))]
+
+        # --- generate synthetic values
+        for t_hand in options_f:
+            for t_option in t_hand:
+                t_option.calc_value_function(alpha_f=alpha_f, lambda_f=lambda_f, beta_f=beta_f, gamma_f=gamma_f, delta_f=delta_f)
+        del t_hand, t_option
+
+        # --- generate probabilities for each option
+        probs_f = list()
+        for t_hand in options_f:
+            probs_f.append(list(calc_prob_options(dict(zip([x.name for x in t_hand], [x.value for x in t_hand])), phi_f=phi_f).values()))
+        del t_hand
+
+        # --- select probs for observed choices
+        choice_prob_f = list()
+        for i in range(0, len(self.endog)):
+            choice_prob_f.append(probs_f[i][self.endog[i]])
+
+        # --- calc log-likelihood
+        LL_f = [np.log(x) for x in choice_prob_f]
+
+        return np.array(LL_f)
+
 
 # initial parameters
-t_alpha = 0.88
-t_lambda = 2.25
-t_beta = 0.88
-t_gamma = 0.61
-t_delta = 0.69
-t_phi = 0.5
-t_phi = 0.1
 t_select_hands = t_select_hands_prev_loss.copy()
+params_actual = {'alpha': 0.88, 'lambda': 2.25, 'beta': 0.88, 'gamma': 0.61, 'delta': None}     # delta=0.69
+n_hands = 1000
+exp_val_win = 100
+exp_prob_win = 0.6
+val_loss_on_play = -100
+phi = 0.5
 
-# ---- This needs to be moved inside to adapt to cards players is nolding
-options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}),
-           Option(name='fold', outcomes={'win': {'payoff': -10, 'prob': 0.5}, 'lose': {'payoff': 0, 'prob': 0.5}})]
+# --- generate synthetic options
+options = [[Option(name='play', outcomes={'win': {'payoff': exp_val_win, 'prob': exp_prob_win}, 'lose': {'payoff': val_loss_on_play, 'prob': 1-exp_prob_win}}),
+            Option(name='fold', outcomes={'win': {'payoff': -10, 'prob': 1}})] for x in range(0, n_hands)]
 
-option_values = dict()
-for t_option in options:
-    t_option.calc_value_function(t_alpha, t_lambda, t_beta, t_gamma, t_delta)
-    option_values.update({t_option.name: t_option.value})
-# -----------------------
+# --- generate synthetic values
+for t_hand in options:
+    for t_option in t_hand:
+        t_option.calc_value_function(alpha_f=params_actual['alpha'], lambda_f=params_actual['lambda'], beta_f=params_actual['beta'], gamma_f=params_actual['gamma'], delta_f=params_actual['delta'])
+del t_hand, t_option
 
-LL = calc_LL(players[0], t_select_hands, t_phi, option_values)
+# --- generate synthetic probabilities of choosing
+probs = list()
+for t_hand in options:
+    probs.append(list(calc_prob_options(dict(zip([x.name for x in t_hand], [x.value for x in t_hand])), phi_f=phi).values()))
+del t_hand
+
+# --- generate synthetic choices
+choice_play = list()
+for t_hand in probs:
+    choice_play.append(int(random.random() > t_hand[0]))
+del t_hand
+
+model = ProspectModel(endog=np.array(choice_play), player=players[0], select_hands=t_select_hands)
+# model_result = model.fit(start_params=list(params_actual.values()))
+start_params = np.array([1] * len(list(params_actual.values())))
+model_result = model.fit(start_params=start_params[0:-1], maxiter=1000, method='bfgs')
+print(model_result.summary())
+print(params_actual)
+
+model.score(model_result.params)
