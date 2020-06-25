@@ -669,126 +669,232 @@ print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
 
 
 # ------ Fit prospect theory model -----
-import math
 import random
+import numpy as np
 from statsmodels.base.model import GenericLikelihoodModel
-
-
-def calc_prob_options(values_f, phi_f):
-    # calc exponentiated values and add to get denominator
-    t_dict = dict()
-    t_denom = 0
-    for t_name_f, t_value_f in values_f.items():
-        t_dict.update({t_name_f: math.exp(phi_f * t_value_f)})
-        t_denom += t_dict[t_name_f]
-    # divide all values by denominator
-    for t_option_f, t_value_f in t_dict.items():
-        t_dict.update({t_option_f: t_value_f / t_denom})
-    return t_dict
+from prospect_theory_funcs import *
 
 
 class Option:
     def __init__(self, name, outcomes):
         self.name = name
         self.outcomes = outcomes
-        self.value = None
+    
+    def calc_option_value(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
+        return sum([calc_outcome_value(calc_outcome_v(x_f=t_outcome['payoff'], alpha_f=alpha_f, lambda_f=lambda_f, beta_f=beta_f),
+                                       calc_outcome_pi(p_f=t_outcome['prob'], c_f=gamma_f if (t_outcome['payoff'] >= 0) else delta_f))
+                    for _, t_outcome in self.outcomes.items()])
 
-    def calc_value_function(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
-        def calc_vx(x_ff, alpha_ff, lambda_ff, beta_ff):
-            if x_ff >= 0:
-                return x_ff ** alpha_ff
-            if x_ff < 0:
-                return -lambda_ff * ((-x_ff) ** beta_ff)
 
-        def calc_pi(prob_ff, c_ff):
-            return (prob_ff ** c_ff) / (((prob_ff ** c_ff) + ((1 - prob_ff) ** c_ff)) ** (1 / c_ff))
+class ChoiceSituation:
+    def __init__(self, sit_options, sit_choice=None):
+        self.options = sit_options
+        self.option_names = [x.name for x in sit_options]
+        self.choice = sit_choice
+        self.values = None
+        self.prob_options = None
+        self.prob_choice = None
+        if (self.choice is not None) and self.choice not in self.option_names:
+            print("Warning: specified choice of '%s' is not an option in choice set: %s" % (self.choice, self.option_names))
 
-        value_f = 0
-        for _, t_outcome in self.outcomes.items():
-            # value_f += calc_vx(t_outcome['payoff'], alpha_f, lambda_f, beta_f) * \
-            #            calc_pi(t_outcome['prob'], gamma_f if t_outcome['payoff'] > 0 else delta_f)
-            value_f += calc_vx(t_outcome['payoff'], alpha_f, lambda_f, beta_f) * \
-                       calc_pi(t_outcome['prob'], gamma_f)  # one c parameter
+    def get_option_values(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
+        return [x.calc_option_value(alpha_f, lambda_f, beta_f, gamma_f, delta_f) for x in self.options]
 
-        self.value = value_f
+    def get_option_probs(self, phi_f):
+        if self.values is not None:
+            return calc_prob_options(self.values, phi_f)
+        else:
+            print("Error: no option values stored for choice situation. Set via method 'get_option_values(args)' first")
+            return None
+
+    def get_choice_location(self, choice_f):
+        return self.option_names.index(choice_f)
+
+    def get_prob_choice(self, choice_f):
+        if self.prob_options is not None:
+            return self.prob_options[self.get_choice_location(choice_f)]
+        else:
+            print("Error: no option probabilities stored for choice situation. Set via method 'get_option_probs(args)' first")
+            return None
+
+    def set_model_values(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f, phi_f):
+        self.values = self.get_option_values(alpha_f, lambda_f, beta_f, gamma_f, delta_f)
+        self.prob_options = self.get_option_probs(phi_f)
+        self.prob_choice = self.get_prob_choice(self.choice)
 
 
 class ProspectModel(GenericLikelihoodModel):
+    def __init__(self, endog, **kwds):
+        super(ProspectModel, self).__init__(endog, **kwds)
+        self.alpha_f = None
+        self.lambda_f = None
+        self.beta_f = None
+        self.gamma_f = None
+        self.delta_f = None
+
+    # refresh choice sitaution values under updated model parameters
+    def refresh_choice_situation_values(self):
+        for t_choice_sit in self.choice_situations_f:
+            t_choice_sit.set_model_values(alpha_f=self.alpha_f, lambda_f=self.lambda_f, beta_f=self.beta_f, gamma_f=self.gamma_f, delta_f=self.delta_f, phi_f=self.phi_f)
+
+    # ---- Manual LL and score ----
+    # replaces default loglikelihood for each observation
     def loglikeobs(self, params):
-        alpha_f = params[0]
-        lambda_f = params[1]
-        beta_f = params[2]
-        gamma_f = params[3]
-        delta_f = None
-        phi_f = 0.5
+        # print(self.choice_probs)
+        self.alpha_f = params[0]
+        self.lambda_f = params[1]
+        self.beta_f = params[2]
+        self.gamma_f = params[3]
+        self.delta_f = 0.69     # ######self.gamma_f
 
-        exp_val_win_f = 100
-        exp_prob_win_f = 0.6
-        val_loss_on_play_f = -100
-
-        # --- generate synthetic options
-        options_f = [[Option(name='play', outcomes={'win': {'payoff': exp_val_win_f, 'prob': exp_prob_win_f}, 'lose': {'payoff': val_loss_on_play_f, 'prob': 1 - exp_prob_win_f}}),
-                      Option(name='fold', outcomes={'win': {'payoff': -10, 'prob': 1}})] for x in range(0, len(self.endog))]
-
-        # --- generate synthetic values
-        for t_hand in options_f:
-            for t_option in t_hand:
-                t_option.calc_value_function(alpha_f=alpha_f, lambda_f=lambda_f, beta_f=beta_f, gamma_f=gamma_f, delta_f=delta_f)
-        del t_hand, t_option
-
-        # --- generate probabilities for each option
-        probs_f = list()
-        for t_hand in options_f:
-            probs_f.append(list(calc_prob_options(dict(zip([x.name for x in t_hand], [x.value for x in t_hand])), phi_f=phi_f).values()))
-        del t_hand
-
-        # --- select probs for observed choices
-        choice_prob_f = list()
-        for i in range(0, len(self.endog)):
-            choice_prob_f.append(probs_f[i][self.endog[i]])
+        # -- for given evaluation of likelihood at current value of params, calculate choice information
+        self.refresh_choice_situation_values()
 
         # --- calc log-likelihood
-        LL_f = [np.log(x) for x in choice_prob_f]
+        LL_f = [np.log(x.prob_choice)*10 for x in self.choice_situations_f]
 
         return np.array(LL_f)
 
+    # # replaces default gradient loglikelihood for each observation (Jacobian)
+    # def score(self, params, **kwds):
+    #     def calc_grad(options_ff, j_chosen_ff, prob_choice_ff, alpha_ff, lambda_ff, beta_ff, gamma_ff, delta_ff, phi_ff):
+    #         # d(LL)/d(x) = sum[(1/Pr) * d(Pr)/d(x)]
+    #         # d(Pr)/d(x=alpha, beta, lambda) = d(Pr)/d(V) * d(V)/d(v) * d(v)/d(x=alpha, beta, lambda)
+    #         # d(Pr)/d(x=c=gamma, delta)      = d(Pr)/d(V) * d(V)/d(pi) * d(pi)/d(x=c=gamma, delta)
+    #         def d_v_d_alpha(x_fff, alpha_fff):
+    #             return (x_fff ** alpha_fff) * np.log(x_fff) if (x_fff >= 0) else 0
+    #
+    #         def d_v_d_beta(x_fff, beta_fff, lambda_fff):
+    #             return (-lambda_fff) * ((-x_fff) ** beta_fff) * np.log(-x_fff) if (x_fff < 0) else 0
+    #
+    #         def d_v_d_lambda(x_fff, beta_fff):
+    #             return -1 * ((-x_fff) ** beta_fff) if (x_fff < 0) else 0
+    #
+    #         def d_pi_d_c(p_fff, c_fff):
+    #             return (p_fff ** c_fff) * ((2 - (p_fff ** c_fff)) ** (-1 / c_fff)) * (
+    #                     (np.log(2 - (p_fff ** c_fff)) / (c_fff ** 2)) + (
+    #                     ((p_fff ** c_fff) * np.log(p_fff)) / (c_fff * (2 - (p_fff ** c_fff))))) + (
+    #                            p_fff ** c_fff) * ((2 - (p_fff ** c_fff)) ** (-1 / c_fff)) * np.log(p_fff)
+    #
+    #         def calc_d_Pr_d_x(options_fff, j_chosen_fff, d_param_fff, alpha_fff, lambda_fff, beta_fff, gamma_fff, delta_fff, phi_fff):
+    #             def return_option_d_x(option_ffff, select_param_ffff, alpha_ffff, lambda_ffff, beta_ffff, gamma_ffff, delta_ffff):
+    #                 if select_param_ffff == 'alpha':
+    #                     return sum([calc_outcome_pi(p_f=t_outcome['prob'], c_f=gamma_ffff if (t_outcome['payoff'] >= 0) else delta_ffff if (t_outcome['payoff'] >= 0) else delta_ffff) *
+    #                                 d_v_d_alpha(x_fff=t_outcome['payoff'], alpha_fff=alpha_ffff)
+    #                                 for _, t_outcome in option_ffff.outcomes.items()])
+    #                 if select_param_ffff == 'lambda':
+    #                     return sum([calc_outcome_pi(p_f=t_outcome['prob'], c_f=gamma_ffff if (t_outcome['payoff'] >= 0) else delta_ffff if (t_outcome['payoff'] >= 0) else delta_ffff) *
+    #                                 d_v_d_lambda(x_fff=t_outcome['payoff'], beta_fff=beta_ffff)
+    #                                 for _, t_outcome in option_ffff.outcomes.items()])
+    #                 if select_param_ffff == 'beta':
+    #                     return sum([calc_outcome_pi(p_f=t_outcome['prob'], c_f=gamma_ffff if (t_outcome['payoff'] >= 0) else delta_ffff if (t_outcome['payoff'] >= 0) else delta_ffff) *
+    #                                 d_v_d_beta(x_fff=t_outcome['payoff'], beta_fff=beta_ffff, lambda_fff=lambda_ffff)
+    #                                 for _, t_outcome in option_ffff.outcomes.items()])
+    #                 if select_param_ffff == 'c':
+    #                     return sum([calc_outcome_v(x_f=t_outcome['payoff'], alpha_f=alpha_ffff, lambda_f=lambda_ffff, beta_f=beta_ffff) *
+    #                                 d_pi_d_c(p_fff=t_outcome['prob'], c_fff=gamma_ffff if (t_outcome['payoff'] >= 0) else delta_ffff)
+    #                                 for _, t_outcome in option_ffff.outcomes.items()])
+    #
+    #             # calc components common across derivatives
+    #             t_exp_option_vals = [calc_exp_option_value(
+    #                 j_opt.calc_option_value(alpha_fff, lambda_fff, beta_fff, gamma_fff, delta_fff), phi_fff) for j_opt
+    #                                  in options_fff]
+    #
+    #             # calc components specific to parameter
+    #             t_options_d_x = [
+    #                 return_option_d_x(option_ffff=j_opt, select_param_ffff=d_param_fff, alpha_ffff=alpha_fff,
+    #                                   lambda_ffff=lambda_fff, beta_ffff=beta_fff, gamma_ffff=gamma_fff,
+    #                                   delta_ffff=delta_fff) for j_opt in options_fff]
+    #
+    #             f_f = t_exp_option_vals[j_chosen_fff]
+    #             g_f = sum(t_exp_option_vals)
+    #             f_prime_f = phi_ff * t_exp_option_vals[j_chosen_fff] * t_options_d_x[j_chosen_fff]
+    #             g_prime_f = phi_ff * np.dot(t_exp_option_vals, t_options_d_x)
+    #             return (f_prime_f * g_f - g_prime_f * f_f) / (g_prime_f ** 2)
+    #
+    #         grad_params_f = ['alpha', 'lambda', 'beta', 'c']
+    #         grad_values_f = list()
+    #         for t_select_param in grad_params_f:
+    #             grad_values_f.append(
+    #                 (1/prob_choice_ff) *
+    #                 calc_d_Pr_d_x(options_fff=options_ff, j_chosen_fff=j_chosen_ff, d_param_fff=t_select_param,
+    #                               alpha_fff=alpha_ff, lambda_fff=lambda_ff, beta_fff=beta_ff, gamma_fff=gamma_ff,
+    #                               delta_fff=delta_ff, phi_fff=phi_ff)
+    #             )
+    #
+    #         return dict(zip(grad_params_f, grad_values_f))
+    #
+    #     # ensure that the values stores for options, probs, choice_probs are update for current value of likelihood
+    #     self.loglikeobs(params)     # may be able to remove this to halve the amount of execution time
+    #
+    #     jacob_f = list()
+    #     for cs_f in self.choice_situations_f:
+    #         t_grad = calc_grad(options_ff=cs_f.options, j_chosen_ff=cs_f.get_choice_location(cs_f.choice), prob_choice_ff=cs_f.prob_choice,
+    #                            alpha_ff=self.alpha_f, lambda_ff=self.lambda_f, beta_ff=self.beta_f, gamma_ff=self.gamma_f, delta_ff=self.delta_f, phi_ff=self.phi_f)
+    #         jacob_f.append([t_grad['alpha'], t_grad['lambda'], t_grad['beta'], t_grad['c']])
+    #     return np.sum(np.array(jacob_f), axis=0)
+
+
 
 # initial parameters
-t_select_hands = t_select_hands_prev_loss.copy()
-params_actual = {'alpha': 0.88, 'lambda': 2.25, 'beta': 0.88, 'gamma': 0.61, 'delta': None}     # delta=0.69
+# t_select_hands = t_select_hands_prev_loss.copy()
+params_actual = {'alpha': 0.88, 'lambda': 2.25, 'beta': 0.88, 'gamma': 0.61, 'delta': 0.69}     # delta=0.69
 n_hands = 1000
-exp_val_win = 100
-exp_prob_win = 0.6
-val_loss_on_play = -100
-phi = 0.5
+phi = .05
+success_event_name = 'fold'
+fail_event_name = 'play'
 
-# --- generate synthetic options
-options = [[Option(name='play', outcomes={'win': {'payoff': exp_val_win, 'prob': exp_prob_win}, 'lose': {'payoff': val_loss_on_play, 'prob': 1-exp_prob_win}}),
-            Option(name='fold', outcomes={'win': {'payoff': -10, 'prob': 1}})] for x in range(0, n_hands)]
+# ------------ generate synthetic options -------------------
+t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
+choice_situations = list()
+for n in range(0, n_hands):
+    t_choice_situation = ChoiceSituation(sit_options=t_choice_options, sit_choice=None)
+    t_choice_situation.values = t_choice_situation.get_option_values(alpha_f=params_actual['alpha'], lambda_f=params_actual['lambda'], beta_f=params_actual['beta'], gamma_f=params_actual['gamma'], delta_f=params_actual['delta'])
+    t_choice_situation.prob_options = t_choice_situation.get_option_probs(phi_f=phi)
+    choice_situations.append(t_choice_situation)
+    del t_choice_situation
+del n
 
-# --- generate synthetic values
-for t_hand in options:
-    for t_option in t_hand:
-        t_option.calc_value_function(alpha_f=params_actual['alpha'], lambda_f=params_actual['lambda'], beta_f=params_actual['beta'], gamma_f=params_actual['gamma'], delta_f=params_actual['delta'])
-del t_hand, t_option
+for t_sit in choice_situations:
+    t_sit.choice = (success_event_name if random.random() < t_sit.get_prob_choice(success_event_name) else fail_event_name)
+del t_sit
+# -------------------------------------------------------------------------------
 
-# --- generate synthetic probabilities of choosing
-probs = list()
-for t_hand in options:
-    probs.append(list(calc_prob_options(dict(zip([x.name for x in t_hand], [x.value for x in t_hand])), phi_f=phi).values()))
-del t_hand
+# reset values created for synthetic generation back to none
+for cs in choice_situations:
+    cs.values = None
+    cs.prob_options = None
+    cs.prob_choice = None
 
-# --- generate synthetic choices
-choice_play = list()
-for t_hand in probs:
-    choice_play.append(int(random.random() > t_hand[0]))
-del t_hand
-
-model = ProspectModel(endog=np.array(choice_play), player=players[0], select_hands=t_select_hands)
-# model_result = model.fit(start_params=list(params_actual.values()))
-start_params = np.array([1] * len(list(params_actual.values())))
-model_result = model.fit(start_params=start_params[0:-1], maxiter=1000, method='bfgs')
+model = ProspectModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations]), choice_situations_f=choice_situations, phi_f=phi)
+start_params = [0.5, 2, 0.5, 0.5, None]
+# start_params = [params_actual[x] for x in ['alpha', 'lambda', 'beta', 'gamma', 'delta']]
+bounds_params = [(1e-4, 1-1e-4), (1e-4, 10), (1e-4, 1-1e-4), (1e-4, 1-1e-4), (None, None)]
+model_result = model.fit(start_params=start_params[0:-1], method='minimize') #'lbfgs', maxiter=100, disp=True, bounds=bounds_params[0:-1], pgtol=1e-12, factr=1e-12)
 print(model_result.summary())
 print(params_actual)
+print(model.score(model_result.params))
 
-model.score(model_result.params)
+# =============== test derivative specifications ====================
+import matplotlib.pyplot as plt
+
+t_param_name = 'c'
+param_locs = {'alpha': 0, 'lambda': 1, 'beta': 2, 'c': 3}
+param_domain = {'alpha': (0, 1), 'lambda': (0, 10), 'beta': (0, 1), 'c': (0, 1)}
+p_vec = [x/10 for x in range(param_domain[t_param_name][0], param_domain[t_param_name][1]*10)]
+LL_p = list()
+score_p = list()
+for p in p_vec[1:-1]:
+    p_loc_in_params = param_locs[t_param_name]
+    t_params = start_params[0:p_loc_in_params] + [p] + start_params[(p_loc_in_params + 1):-1]   # beta
+    LL_p.append(np.sum(model.loglikeobs(t_params)))
+    score_p.append(model.score(np.array(t_params))[p_loc_in_params])
+finite_diff_deriv_LL_p = [(LL_p[i] - LL_p[i-1])/(p_vec[i] - p_vec[i-1]) for i in range(1, len(LL_p))]
+
+# plt.plot(p_vec[1:-1], [x+70 for x in LL_p])
+# plt.plot(p_vec, [x for x in score_p])
+# plt.plot(p_vec[1:-1], [None] + finite_diff_deriv_LL_p)
+
+plt.plot(p_vec[1:-1], [x for x in score_p])
+plt.plot(p_vec[1:-1], [None] + finite_diff_deriv_LL_p)
+
