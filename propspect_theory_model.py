@@ -3,7 +3,8 @@ import random
 import numpy as np
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
-
+from assumption_calc_functions import *
+from game_classes import *
 
 class Option:
     def __init__(self, name, outcomes):
@@ -196,7 +197,7 @@ class ProspectModel(GenericLikelihoodModel):
         return np.array(jacob_f)  # np.sum(np.array(jacob_f), axis=0)
 
 
-def generate_synthetic_data(n_hands, params_actual, phi):
+def generate_synthetic_data(n_hands, params_actual, phi, success_event_name_f, fail_event_name_f):
     choice_situations = list()
     for n in range(0, n_hands):
         t1_win_prob = random.random()
@@ -222,7 +223,7 @@ def generate_synthetic_data(n_hands, params_actual, phi):
 
     for t_sit in choice_situations:
         t_sit.choice = (
-            success_event_name if random.random() < t_sit.get_prob_choice(success_event_name) else fail_event_name)
+            success_event_name_f if random.random() < t_sit.get_prob_choice(success_event_name_f) else fail_event_name_f)
     del t_sit
     # -------------------------------------------------------------------------------
 
@@ -234,18 +235,59 @@ def generate_synthetic_data(n_hands, params_actual, phi):
     return choice_situations
 
 
+def generate_choice_situations(player_f, game_hand_index_f):
+    choice_situations_f = list()
+
+    for game_num, hands in game_hand_index_f.items():
+        for hand_num in hands:
+            print('game %s hand %s' % (game_num, hand_num))
+            tplay_win_prob = 0.630 if player_f.odds[game_num][hand_num] else 0.126    # based on roll up prob of winning for a given player as a base assumption
+            tplay_win_payoff = 705  # based on average of winnings if player decides to play on first round AND wins
+            tplay_lose_payoff = -780    # based on average of winnings if player decides to play on first round AND loses
+
+            tfold_win_prob = 0  # cannot with under folding scenario
+            big_blind = 100
+            small_blind = 50
+            if player_f.blinds[game_num][hand_num]['big']:
+                tfold_lose_payoff = -big_blind
+            elif player_f.blinds[game_num][hand_num]['small']:
+                tfold_lose_payoff = -small_blind
+            else:
+                tfold_lose_payoff = 0
+
+            t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
+                                                              'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
+                                Option(name='fold', outcomes={'lose': {'payoff': tfold_lose_payoff, 'prob': 1 - tfold_win_prob}})]  # 'win': {'payoff': draw_payoff(), 'prob': tfold_win_prob}
+            t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:], sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop']=='f' else "play")
+            choice_situations_f.append(t_choice_situation)
+            del t_choice_situation
+    del game_num, hands, hand_num
+    return choice_situations_f
+
+
 # ------------- SET PARAMETERS ------------------------------
 phi = .5
+param_names_actual = ['alpha', 'lambda', 'beta', 'gamma', 'delta']
 
 # ------------- GENERATE SYNTHETIC DATA ----------------------
-param_names_actual = ['alpha', 'lambda', 'beta', 'gamma', 'delta']
-param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69]
-params_actual = dict(zip(param_names_actual, param_values_actual))
-n_hands = 1000
+# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69]
+# params_actual = dict(zip(param_names_actual, param_values_actual))
+# n_hands = 1000
 success_event_name = 'fold'
 fail_event_name = 'play'
-# t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
-choice_situations = generate_synthetic_data(n_hands, params_actual, phi)
+# choice_situations = generate_synthetic_data(n_hands, params_actual, phi, success_event_name, fail_event_name)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
+
+# -------------- PROCESS ACTUAL DATA ----------------------------
+import pickle
+with open("python_hand_data.pickle", 'rb') as f:
+    data = pickle.load(f)
+players = data['players']
+games = data['games']
+df = data['df']
+
+# create player-specific game, hand index
+game_hand_player_index = create_game_hand_index(players[0])
+choice_situations = generate_choice_situations(players[0], game_hand_player_index)
 
 # ------------ FIT MODEL -------------------
 # Optimization parameters
