@@ -21,7 +21,8 @@ def calc_exp_option_value(option_value_f, phi_f):
 
 
 def calc_prob_options(option_values_f, phi_f):
+    # return [x / sum(option_values_f) for x in option_values_f]
+
     # to protect against large values in interim steps, take difference of values, use first value as base
-    # exp_opt_values_f = [calc_exp_option_value(x-option_values_f[0], phi_f) for x in option_values_f]
-    # return [x / sum(exp_opt_values_f) for x in exp_opt_values_f]
-    return [x / sum(option_values_f) for x in option_values_f]
+    exp_opt_values_f = [calc_exp_option_value(x-option_values_f[0], phi_f) for x in option_values_f]
+    return [x / sum(exp_opt_values_f) for x in exp_opt_values_f]
