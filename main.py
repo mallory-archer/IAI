@@ -4,12 +4,13 @@ import pandas as pd
 import json
 from scipy.stats import norm
 import statsmodels.api as sm
+from math import ceil
 
 pd.options.display.max_columns = 25
 
 # ---- Set parameters ----
-fd_data = os.path.join("..", "Data", "5H1AI_logs")  # location of data relative to code base path
-fn_data = [x for x in os.listdir(fd_data) if x.find('sample_game') > -1]     # list of data file names (log files)
+fd_data = os.path.join("..", "self", "5H1AI_logs")  # location of data relative to code base path
+fn_data = [x for x in os.listdir(fd_data) if x.find('sample_game') > -1]  # list of data file names (log files)
 
 
 # ---- Define functions -----
@@ -20,9 +21,119 @@ def prop_2samp_ind_large(n1_success, n2_success, n1, n2):
     qhat = 1 - phat
     stdev_p1p2_diff = np.sqrt(phat * qhat * ((1 / n1) + (1 / n2)))
     z_f = (p1 - p2) / stdev_p1p2_diff
-    p_f = round((1 - norm.cdf(abs(z_f)))*2, 4)
+    p_f = round((1 - norm.cdf(abs(z_f))) * 2, 4)
     return p1, p2, z_f, p_f
 
+
+def pre_flop_strength_1(hole_cards):
+
+    # Sklansky hand groups: lower group value means better ranking of cards
+    # "http://www.thepokerbank.com/strategy/basic/starting-hand-selection/sklansky-groups/"
+
+    ranks = "23456789TJQKA"
+    suits = "cdhs"
+
+    # input hand for evaluation
+    hand = list()
+    hand.append(hole_cards[0:2])
+    hand.append(hole_cards[2:])
+
+    # sorting the two hand cards in descending order (Expected order : "HigherCard(suit)LowerCard(suit)")
+    if ranks.index(hand[0][0]) < ranks.index(hand[1][0]):
+        hand[0], hand[1] = hand[1], hand[0]
+
+    # same suit pocket cards groups
+    if hand[0][1] == hand[1][1]:
+        same_suit_groups={ "AK":1,
+                          "AQ":2, "AJ":2, "KQ":2,
+                          "AT":3, "KJ":3, "QJ":3, "JT":3,
+                          "KT":4, "QT":4, "J9":4, "T9":4, "98":4,
+                          "A9":5,"A8":5,"A7":5,"A6":5,"A5":5,"A4":5,"A3":5,"A2":5,"Q9":5, "T8":5, "97":5, "87":5, "76":5,
+                          "J8":6, "86":6, "75":6, "65":6, "54":6,
+                          "64":7, "53":7, "43":7, "K9":7,"K8":7,"K7":7,"K6":7,"K5":7,"K4":7,"K3":7,"K2":7,
+                          "J7":8, "96":8, "85":8, "74":8, "42":8, "32":8
+                         }
+        # combining the value of cards into single string for dictionary lookup
+        hand_value = hand[0][0]+hand[1][0]
+        if hand_value in same_suit_groups:
+            group = same_suit_groups.get(hand_value)
+        else:
+            # According to Sklansky the remaining cards fall into group 9
+            group = 9
+
+    else:
+        # off suit pocket cards groups
+        off_suit_groups ={"AA":1, "KK":1, "QQ":1, "JJ":1,
+                         "AK":2,"TT":2,
+                         "AQ":3, "99":3,
+                         "AJ":4, "KQ":4, "88":4,
+                         "KJ":5, "QJ":5, "JT":5,"77":5, "66":5,
+                         "AT":6, "KT":6, "QT":6,"55":6,
+                         "J9":7, "T9":7, "98":7,"44":7,"33":7,"22":7,
+                         "A9":8, "K9":8, "Q9":8, "J8":8,"T8":8, "87":8, "76":8, "65":8, "54":8
+                        }
+        # combining the value of cards into single string for dictionary lookup
+        hand_value = hand[0][0]+hand[1][0]
+        if hand_value in off_suit_groups:
+            group = off_suit_groups.get(hand_value)
+        else:
+            # According to Sklansky the remaining cards fall into group 9
+            group = 9
+
+    return group
+
+def pre_flop_strength_2(hole_cards):
+
+    # Chen formula for assigning strength to pre flop hands
+    # "http://www.thepokerbank.com/strategy/basic/starting-hand-selection/chen-formula/"
+
+    ranks = "23456789TJQKA"
+    suits = "cdhs"
+
+    # input hand for evaluation
+    hand = list()
+    hand.append(hole_cards[0:2])
+    hand.append(hole_cards[2:])
+
+    # sorting the two hand cards in descending order (Expected order : "HigherCard(suit)LowerCard(suit)")
+    if ranks.index(hand[0][0]) < ranks.index(hand[1][0]):
+        hand[0], hand[1] = hand[1], hand[0]
+
+    # Value for Face cards
+    facePoints = {"A": 10, "K": 8, "Q": 7, "J": 6, "T": 5}
+
+
+    a, b = hand[0], hand[1]
+
+    # Score highest card
+    if a[0] in facePoints:
+        score = facePoints.get(a[0])
+    else:
+        score = int(a[0])/2.
+
+    # Multiply pairs by 2 of one card's value
+    if a[0] is b[0]:
+        score *= 2
+        if score < 5:
+            score = 5
+
+    # Add 2 if cards are suited
+    if a[1] is b[1]:
+        score += 2
+
+    # Subtract points if there is a gap
+    gap = ranks.index(a[0]) - ranks.index(b[0]) - 1
+    gapPoints = {1: 1, 2: 2, 3: 4}
+    if gap in gapPoints:
+        score -= gapPoints.get(gap)
+    elif gap >= 4:
+        score -= 5
+
+    # Straight bonus
+    if (gap < 2) and (ranks.index(a[0]) < ranks.index("Q")) and (a[0] is not b[0]):
+        score += 1
+
+    return int(ceil(score))
 
 def extract_game_number(fn_f):
     return str(fn_f.split('sample_game_')[1].split('.log')[0])
@@ -93,7 +204,7 @@ class Hand:
         self.actions = self.get_actions()
         self.outcomes = self.get_outcomes()
         self.missing_fields = list()
-        self.start_stack = None     # calculated in Game object because it is based on change log of previous hands
+        self.start_stack = None  # calculated in Game object because it is based on change log of previous hands
 
         # check for initialization of select attributes
         self.check_player_completeness()
@@ -125,7 +236,8 @@ class Hand:
             t_all_cards = self.hand_data.split(':')[3].split('|')
             if len(t_all_cards) > len(self.players):
                 t_board_cards = t_all_cards[-1].split('/')
-                t_hole_cards = t_all_cards[:-1] + [t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
+                t_hole_cards = t_all_cards[:-1] + [
+                    t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
                 return {'hole_cards': dict(zip(self.players, t_hole_cards)), 'board_cards': t_board_cards}
             else:
                 t_hole_cards = t_all_cards
@@ -140,7 +252,8 @@ class Hand:
             premium_cards_f = {'A', 'K', 'Q', 'J'}
             odds_dict_f = dict()
             for k, v in t_cards.items():
-                odds_dict_f.update({k: {'both_hole_premium_cards': (v[0] in premium_cards_f) & (v[2] in premium_cards_f)}})
+                odds_dict_f.update(
+                    {k: {'both_hole_premium_cards': (v[0] in premium_cards_f) & (v[2] in premium_cards_f)}})
             return odds_dict_f
         except TypeError:
             return None
@@ -150,16 +263,20 @@ class Hand:
             round_dict_f = dict(zip(round_actors_f, [x for x in round_actions_f if x in {'f', 'r', 'c'}]))
             [t_actors.remove(a) for a in [k for k, v in round_dict_f.items() if v == 'f']]
             return round_dict_f
+
         try:
             t_actions = dict(zip(['preflop', 'flop', 'river', 'turn'], self.hand_data.split(':')[2].split('/')))
             t_actors = self.players[:]
 
             # adjust preflop actions to account for all folds defaulting to big blind gets pot; label as "call" for big blind
-            if (len(t_actions['preflop']) < len(t_actors)) and (all([x=='f' for x in t_actions['preflop']])):
+            if (len(t_actions['preflop']) < len(t_actors)) and (all([x == 'f' for x in t_actions['preflop']])):
                 t_actions['preflop'] += 'c'
 
-            action_dict_f = {'preflop': get_round_action(round_actors_f=t_actors[2:] + t_actors[0:2], round_actions_f=t_actions['preflop'])}  # preflop has different order of betting
-            [action_dict_f.update({k: get_round_action(round_actors_f=t_actors, round_actions_f=v)}) for k, v in t_actions.items() if k != 'preflop']
+            action_dict_f = {'preflop': get_round_action(round_actors_f=t_actors[2:] + t_actors[0:2],
+                                                         round_actions_f=t_actions[
+                                                             'preflop'])}  # preflop has different order of betting
+            [action_dict_f.update({k: get_round_action(round_actors_f=t_actors, round_actions_f=v)}) for k, v in
+             t_actions.items() if k != 'preflop']
             return action_dict_f
         except IndexError:
             return None
@@ -242,9 +359,11 @@ class Game:
         if len(self.check_for_missing_hand_number()) > 0:
             print('ERROR:cannot calculate stack size, game missing consecutively numbered hands.')
         else:
-            self.hands[str(self.start_hand)].start_stack = dict(zip(self.players, [0] * len(self.players)))  # stack at beginning of game (all players set at 0)
+            self.hands[str(self.start_hand)].start_stack = dict(
+                zip(self.players, [0] * len(self.players)))  # stack at beginning of game (all players set at 0)
             for t_h_num in range(int(self.start_hand) + 1, int(self.end_hand) + 1):
-                self.hands[str(t_h_num)].start_stack = self.hands[str(t_h_num - 1)].start_stack.copy()  # initialize stack dictionary for hand
+                self.hands[str(t_h_num)].start_stack = self.hands[
+                    str(t_h_num - 1)].start_stack.copy()  # initialize stack dictionary for hand
 
                 # Check to make sure all player outcomes are accounted for
                 if sum(self.hands[str(t_h_num - 1)].outcomes.values()) != 0:
@@ -252,7 +371,8 @@ class Game:
 
                 for t_p, t_s in self.hands[str(t_h_num - 1)].outcomes.items():
                     try:
-                        self.hands[str(t_h_num)].start_stack[t_p] = t_s + self.hands[str(t_h_num - 1)].start_stack[t_p]  # add stack at beginning of previous hand + outcome of previous hand
+                        self.hands[str(t_h_num)].start_stack[t_p] = t_s + self.hands[str(t_h_num - 1)].start_stack[
+                            t_p]  # add stack at beginning of previous hand + outcome of previous hand
                     except KeyError:
                         pass
 
@@ -261,7 +381,8 @@ class Game:
             for t_p, t_s in self.hands[str(self.end_hand)].outcomes.items():
                 self.final_outcome.update({t_p: self.final_outcome[t_p] + t_s})
             if sum(self.final_outcome.values()) != 0:
-                print('WARNING: Final outcome of game %s is not zero-sum over all players, %f unaccounted for' % (self.number, sum(self.final_outcome.values())))
+                print('WARNING: Final outcome of game %s is not zero-sum over all players, %f unaccounted for' % (
+                self.number, sum(self.final_outcome.values())))
 
         return None
 
@@ -288,7 +409,8 @@ class Game:
 
     def drop_bad_hands(self, hand_num_null_TF=True):
         t_num_hands_dropped = 0
-        t_hand_numbers = list(self.hands.keys())    # structured as such so that dictionary doesn't change size during iteration
+        t_hand_numbers = list(
+            self.hands.keys())  # structured as such so that dictionary doesn't change size during iteration
         for t_h_num in t_hand_numbers:
             t_pop = False
             if hand_num_null_TF:
@@ -348,7 +470,8 @@ class Player:
             t_hand_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
                 try:
-                    t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].odds[self.name]['both_hole_premium_cards']})
+                    t_hand_dict.update(
+                        {str(t_h_num): t_g.hands[str(t_h_num)].odds[self.name]['both_hole_premium_cards']})
                 except KeyError:
                     pass
             t_odds_dict.update({t_g_num: t_hand_dict})
@@ -369,7 +492,7 @@ class Player:
                 t_hand_dict.update({str(t_h_num): t_round_dict})
             t_action_dict.update({t_g_num: t_hand_dict})
         return t_action_dict
-    
+
     def get_game_outcomes(self, games_ff):
         t_outcome_dict = dict()
         for t_g_num in self.game_numbers:
@@ -390,7 +513,8 @@ class Player:
             t_hand_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
                 t_hand_dict.update({str(t_h_num): {'big': t_g.hands[str(t_h_num)].big_blind == self.name,
-                                                   'small': t_g.hands[str(t_h_num)].small_blind == self.name}})     # self = p
+                                                   'small': t_g.hands[
+                                                                str(t_h_num)].small_blind == self.name}})  # self = p
             t_blind_dict.update({t_g_num: t_hand_dict})
         return t_blind_dict
 
@@ -483,7 +607,10 @@ def create_player_df(player_f):
                                   'outcome': player_f.outcomes[t_g_num][str(h_num)],
                                   'big_blind': player_f.blinds[t_g_num][str(h_num)]['big'],
                                   'small_blind': player_f.blinds[t_g_num][str(h_num)]['small'],
+                                  'hole_cards': player_f.cards[t_g_num][str(h_num)],
                                   'premium_hole': player_f.odds[t_g_num][str(h_num)],
+                                  'pre_flop_hand_strength_1': pre_flop_strength_1(player_f.cards[t_g_num][str(h_num)]),
+                                  'pre_flop_hand_strength_2': pre_flop_strength_2(player_f.cards[t_g_num][str(h_num)]),
                                   'start_stack': player_f.stacks[t_g_num][str(h_num)]
                                   })
             except KeyError:
@@ -549,7 +676,8 @@ def behavior_test(df_f, success_field_name_f, sample_partition_field_name_f):
     n_sample2 = sum(in_sample2_f)
     n_sample1_success = sum(in_sample1_f & success_f)
     n_sample2_success = sum(in_sample2_f & success_f)
-    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success, n1=n_sample1, n2=n_sample2)
+    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success,
+                                                n1=n_sample1, n2=n_sample2)
     return {'p1': t_p1, 'n1': n_sample1, 'p2': t_p2, 'n2': n_sample2, 'z': t_z, 'pval': t_p}
 
 
@@ -562,22 +690,24 @@ df = create_base_df_wrapper(players)
 
 # --- Conduct hypothesis test
 # Exclude select observations rows
-excl_cond1 = df.small_blind     # less likely to fold if already have money in the pot
-excl_cond2 = df.big_blind       # less likely to fold if already have money in the pot
+excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
+excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
 excl_cond3 = df.prev_outcome_loss.isnull()  # first hand of game
-excl_cond4 = df.premium_hole    # got lucky with good hole cards no one folds
+excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
 use_ind = df.loc[~(excl_cond1 | excl_cond2 | excl_cond3 | excl_cond4)].index
 df_calc = df.loc[use_ind].reindex()
 
 # Calculate test stats
 sample_partition_binary_field = 'prev_outcome_loss'
 success_event_binary_field = 'preflop_fold'
-t_df = df_calc.groupby('player').apply(behavior_test, success_field_name_f=success_event_binary_field, sample_partition_field_name_f=sample_partition_binary_field)
+t_df = df_calc.groupby('player').apply(behavior_test, success_field_name_f=success_event_binary_field,
+                                       sample_partition_field_name_f=sample_partition_binary_field)
 df_prop_test = pd.DataFrame(list(t_df))
 df_prop_test['player'] = t_df.index
 del t_df
 
-print("Partitioning samples on %s and success event = '%s'." % (sample_partition_binary_field, success_event_binary_field))
+print("Partitioning samples on %s and success event = '%s'." % (
+sample_partition_binary_field, success_event_binary_field))
 print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % (sample_partition_binary_field))
 print(df_prop_test)
 
@@ -585,9 +715,10 @@ print(df_prop_test)
 # df = create_base_df_wrapper(players)    ########
 
 # create training data
-X_col_name = ['any_blind', 'prev_outcome_loss', 'premium_hole', 'rank_start_stack']
+X_col_name = ['any_blind', 'prev_outcome_loss', 'premium_hole','pre_flop_hand_strength_1','pre_flop_hand_strength_2', 'rank_start_stack']
 y_col_name = ['preflop_fold']
-dummy_vars = {'player': 'Pluribus'}     # base field name: value to drop for identification; if value is None, then no dummies are dropped
+dummy_vars = {
+    'player': 'Pluribus'}  # base field name: value to drop for identification; if value is None, then no dummies are dropped
 add_const = False
 
 # process dummy vars
@@ -603,10 +734,11 @@ if len(dummy_vars) > 0:
         X_col_name = [x for x in df_logistic.columns if x != y_col_name[0]]
 else:
     df_logistic = df[X_col_name + y_col_name].dropna().reindex()
-print('Regression data frame has %d observations and %d variables (incl. dependent)' %df_logistic.shape)
+print('Regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
 
 if add_const:
-    sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=sm.add_constant(df_logistic[X_col_name]).astype(float)).fit()
+    sm_result = sm.Logit(endog=df_logistic[y_col_name],
+                         exog=sm.add_constant(df_logistic[X_col_name]).astype(float)).fit()
 else:
     sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=df_logistic[X_col_name].astype(float)).fit()
 print(sm_result.summary2())
