@@ -9,7 +9,8 @@ from math import ceil
 pd.options.display.max_columns = 25
 
 # ---- Set parameters ----
-fd_data = os.path.join("..", "self", "5H1AI_logs")  # location of data relative to code base path
+# fd_data = os.path.join("..", "self", "5H1AI_logs")  # location of data relative to code base path
+fd_data = os.path.join("..", "Data`", "5H1AI_logs")  # location of data relative to code base path
 fn_data = [x for x in os.listdir(fd_data) if x.find('sample_game') > -1]  # list of data file names (log files)
 
 
