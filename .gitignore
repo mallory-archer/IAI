@@ -105,3 +105,6 @@ venv.bak/
 
 # pycharm project files
 .idea/
+
+# data files
+python_hand_data.pickle
