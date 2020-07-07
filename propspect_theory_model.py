@@ -422,7 +422,7 @@ def plot_functions(select_param_name_f, p_vec_f, LL_p_f, score_p_f=None, finite_
                  marker="o")
 
 
-p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_result_info(select_param_name_f=select_param_name1, param_names_f=param_names_actual, param_values_f=[None, None, None, None, None],
+p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_result_info(select_param_name_f=select_param_name1, param_names_f=param_names_actual, param_values_f=list(model_result.params),
                                                                               param_domain_f=dict(zip(param_names_actual, bounds_params)),
                                                                               calc_contour_info_f=calc_contour_info, select_param_name2_f=select_param_name2, n_1D_mesh_points=n_1D_mesh_points)
 
