@@ -81,8 +81,7 @@ def meta_game_stats(games_f, print_f=True, long_print_f=False):
 
     return games_with_file_parse_errors, games_with_error_hands, games_missing_hands, games_start_hand_not_zero
 
-
-# ----- Define classes ----
+  
 class Hand:
     def __init__(self, raw_hand_string):
         self.hand_data = raw_hand_string
@@ -463,7 +462,7 @@ for t_fn in fn_data:
         temp = f.read()
         t_game = Game(temp, game_number_f=extract_game_number(t_fn))
         games.update({t_game.number: t_game})
-del t_fn
+del t_fn, t_game
 
 _, _, _, _ = meta_game_stats(games)
 
@@ -473,7 +472,7 @@ games_b = [x for x in games.keys() if x.find('b') > -1]
 for g1, g2 in zip([x.split('b')[0] for x in games_b], games_b):
     games[g1].combine_games(games[g2], print_f=False)
     games.pop(g2)
-del g1, g2
+del g1, g2, games_b
 
 _, _, _, _ = meta_game_stats(games)
 
@@ -610,6 +609,7 @@ excl_cond3 = df.prev_outcome_loss.isnull()  # first hand of game
 excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
 use_ind = df.loc[~(excl_cond1 | excl_cond2 | excl_cond3 | excl_cond4)].index
 df_calc = df.loc[use_ind].reindex()
+del use_ind
 
 # Calculate test stats
 sample_partition_binary_field = 'prev_outcome_loss'
@@ -643,8 +643,10 @@ if len(dummy_vars) > 0:
             t_cols_to_drop = [t_name, t_excl]
         else:
             t_cols_to_drop = [t_name]
+        del t_excl, t_name
         df_logistic = pd.concat([df_logistic, t_df_dummies], axis=1).drop(columns=t_cols_to_drop)
         X_col_name = [x for x in df_logistic.columns if x != y_col_name[0]]
+        del t_cols_to_drop, t_df_dummies
 else:
     df_logistic = df[X_col_name + y_col_name].dropna().reindex()
 print('Regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
@@ -655,3 +657,42 @@ if add_const:
 else:
     sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=df_logistic[X_col_name].astype(float)).fit()
 print(sm_result.summary2())
+
+
+# ---- Comparison of traditional player style metrics -----
+def get_select_hands(df_f, true_cond_cols_f):
+    t_index = [True] * df_f.shape[0]
+    # filter dataframe to only include select sub-population based on condition columns
+    for t_col, t_cond in true_cond_cols_f.items():
+        t_index = (t_index & (df_f[t_col] == t_cond))
+    t_df = df_f.loc[t_index]
+
+    # retrieve games and hands for sub-population
+    select_hands_dict_f = dict()
+    for t_g_num in t_df['game'].unique():
+        select_hands_dict_f.update({str(t_g_num): [str(x) for x in t_df.loc[t_df['game'] == t_g_num, 'hand'].unique()]})
+    return select_hands_dict_f
+
+
+looseness_comp = dict()
+for p in players:
+    # excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
+    # excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
+    # excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
+    t_select_hands_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': True, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
+    t_select_hands_no_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': False, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
+
+    _, n1_success, n1 = p.calc_looseness(t_select_hands_prev_loss)
+    _, n2_success, n2 = p.calc_looseness(t_select_hands_no_prev_loss)
+    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success, n2_success, n1, n2)
+    looseness_comp.update({p.name: {'p1': t_p1, 'n1': n1_success, 'p2': t_p2, 'n2': n2_success, 'z': t_z, 'pval': t_p}})
+
+    del p, t_p1, t_p2, t_z, t_p, n1_success, n1, n2_success, n2, t_select_hands_no_prev_loss, t_select_hands_prev_loss
+
+print("Partitioning samples on %s and success event = '%s'." % ('prev_outcome_loss', 'voluntarily played hand (looseness)'))
+print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome_loss'))
+print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
+
+# import pickle
+# with open("python_hand_data.pickle", 'wb') as f:
+#     pickle.dump({'players': players, 'games': games, 'df': df}, f)
