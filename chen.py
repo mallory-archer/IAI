@@ -48,6 +48,8 @@ def pre_flop_strength_2():
     # Straight bonus
     if (gap < 2) and (ranks.index(a[0]) < ranks.index("Q")) and (a[0] is not b[0]):
         score += 1
-    print(int(ceil(score)))
 
+    print(int(ceil(score)))
     return int(ceil(score))
+
+pre_flop_strength_2()
