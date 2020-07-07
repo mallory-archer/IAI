@@ -6,6 +6,7 @@ from prospect_theory_funcs import *
 from assumption_calc_functions import *
 from game_classes import *
 
+
 class Option:
     def __init__(self, name, outcomes):
         self.name = name
@@ -268,13 +269,13 @@ def generate_choice_situations(player_f, game_hand_index_f):
 # ------------- SET PARAMETERS ------------------------------
 phi = .5
 param_names_actual = ['alpha', 'lambda', 'beta', 'gamma', 'delta']
+success_event_name = 'fold'
+fail_event_name = 'play'
 
 # ------------- GENERATE SYNTHETIC DATA ----------------------
 # param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69]
 # params_actual = dict(zip(param_names_actual, param_values_actual))
 # n_hands = 1000
-success_event_name = 'fold'
-fail_event_name = 'play'
 # choice_situations = generate_synthetic_data(n_hands, params_actual, phi, success_event_name, fail_event_name)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
 
 # -------------- PROCESS ACTUAL DATA ----------------------------
@@ -307,7 +308,10 @@ n_1D_mesh_points = 5
 model = ProspectModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations]), choice_situations_f=choice_situations, phi_f=phi)
 model_result = model.fit(start_params=start_params, method='LBFGS', maxiter=maxiter, disp=True, bounds=bounds_params, pgtol=pgtol, factr=ftol)
 print(model_result.summary())
-print('Actual parameters: %s' % params_actual)
+try:
+    print('Actual parameters: %s' % params_actual)
+except:
+    pass
 print('Gradient at solution: %s' % dict(zip(param_names_actual, model.score(model_result.params))))
 
 # =============== Graphical examination ====================
@@ -418,7 +422,8 @@ def plot_functions(select_param_name_f, p_vec_f, LL_p_f, score_p_f=None, finite_
                  marker="o")
 
 
-p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_result_info(select_param_name_f=select_param_name1, param_names_f=param_names_actual, param_values_f=param_values_actual,
+p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_result_info(select_param_name_f=select_param_name1, param_names_f=param_names_actual, param_values_f=[None, None, None, None, None],
                                                                               param_domain_f=dict(zip(param_names_actual, bounds_params)),
                                                                               calc_contour_info_f=calc_contour_info, select_param_name2_f=select_param_name2, n_1D_mesh_points=n_1D_mesh_points)
+
 plot_functions('alpha', p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, plot_LL_num_deriv=True, plot_num_analytical_deriv=True, plot_contour=True, XX_f=XX, YY_f=YY, LL_matrix_f=LL_matrix)

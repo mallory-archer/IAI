@@ -1,4 +1,5 @@
 import json
+from odds_functions import slansky_strength, chen_strength
 
 
 class Hand:
@@ -13,7 +14,7 @@ class Hand:
         self.actions = self.get_actions()
         self.outcomes = self.get_outcomes()
         self.missing_fields = list()
-        self.start_stack = None     # calculated in Game object because it is based on change log of previous hands
+        self.start_stack = None  # calculated in Game object because it is based on change log of previous hands
 
         # check for initialization of select attributes
         self.check_player_completeness()
@@ -45,7 +46,8 @@ class Hand:
             t_all_cards = self.hand_data.split(':')[3].split('|')
             if len(t_all_cards) > len(self.players):
                 t_board_cards = t_all_cards[-1].split('/')
-                t_hole_cards = t_all_cards[:-1] + [t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
+                t_hole_cards = t_all_cards[:-1] + [
+                    t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
                 return {'hole_cards': dict(zip(self.players, t_hole_cards)), 'board_cards': t_board_cards}
             else:
                 t_hole_cards = t_all_cards
@@ -60,8 +62,32 @@ class Hand:
             premium_cards_f = {'A', 'K', 'Q', 'J'}
             odds_dict_f = dict()
             for k, v in t_cards.items():
-                odds_dict_f.update({k: {'both_hole_premium_cards': (v[0] in premium_cards_f) & (v[2] in premium_cards_f)}})
-            return odds_dict_f
+                t_dict = dict()
+                try:
+                    # flag premium hole cards
+                    t_dict.update({'both_hole_premium_cards': (v[0] in premium_cards_f) & (v[2] in premium_cards_f)})
+                except:
+                    pass
+                try:
+                    # get Chen hand strength
+                    t_dict.update({'chen': chen_strength(v[0:4])})
+                except:
+                    pass
+                try:
+                    # get Sklansky hand strength
+                    t_dict.update({'slansky': slansky_strength(v[0:4])})
+                except:
+                    pass
+
+                if len(t_dict) > 0:
+                    odds_dict_f.update({k: t_dict})
+
+                del t_dict
+
+            if len(odds_dict_f) > 0:
+                return odds_dict_f
+            else:
+                return None
         except TypeError:
             return None
 
@@ -70,16 +96,20 @@ class Hand:
             round_dict_f = dict(zip(round_actors_f, [x for x in round_actions_f if x in {'f', 'r', 'c'}]))
             [t_actors.remove(a) for a in [k for k, v in round_dict_f.items() if v == 'f']]
             return round_dict_f
+
         try:
             t_actions = dict(zip(['preflop', 'flop', 'river', 'turn'], self.hand_data.split(':')[2].split('/')))
             t_actors = self.players[:]
 
             # adjust preflop actions to account for all folds defaulting to big blind gets pot; label as "call" for big blind
-            if (len(t_actions['preflop']) < len(t_actors)) and (all([x=='f' for x in t_actions['preflop']])):
+            if (len(t_actions['preflop']) < len(t_actors)) and (all([x == 'f' for x in t_actions['preflop']])):
                 t_actions['preflop'] += 'c'
 
-            action_dict_f = {'preflop': get_round_action(round_actors_f=t_actors[2:] + t_actors[0:2], round_actions_f=t_actions['preflop'])}  # preflop has different order of betting
-            [action_dict_f.update({k: get_round_action(round_actors_f=t_actors, round_actions_f=v)}) for k, v in t_actions.items() if k != 'preflop']
+            action_dict_f = {'preflop': get_round_action(round_actors_f=t_actors[2:] + t_actors[0:2],
+                                                         round_actions_f=t_actions[
+                                                             'preflop'])}  # preflop has different order of betting
+            [action_dict_f.update({k: get_round_action(round_actors_f=t_actors, round_actions_f=v)}) for k, v in
+             t_actions.items() if k != 'preflop']
             return action_dict_f
         except IndexError:
             return None
@@ -162,9 +192,11 @@ class Game:
         if len(self.check_for_missing_hand_number()) > 0:
             print('ERROR:cannot calculate stack size, game missing consecutively numbered hands.')
         else:
-            self.hands[str(self.start_hand)].start_stack = dict(zip(self.players, [0] * len(self.players)))  # stack at beginning of game (all players set at 0)
+            self.hands[str(self.start_hand)].start_stack = dict(
+                zip(self.players, [0] * len(self.players)))  # stack at beginning of game (all players set at 0)
             for t_h_num in range(int(self.start_hand) + 1, int(self.end_hand) + 1):
-                self.hands[str(t_h_num)].start_stack = self.hands[str(t_h_num - 1)].start_stack.copy()  # initialize stack dictionary for hand
+                self.hands[str(t_h_num)].start_stack = self.hands[
+                    str(t_h_num - 1)].start_stack.copy()  # initialize stack dictionary for hand
 
                 # Check to make sure all player outcomes are accounted for
                 if sum(self.hands[str(t_h_num - 1)].outcomes.values()) != 0:
@@ -172,7 +204,8 @@ class Game:
 
                 for t_p, t_s in self.hands[str(t_h_num - 1)].outcomes.items():
                     try:
-                        self.hands[str(t_h_num)].start_stack[t_p] = t_s + self.hands[str(t_h_num - 1)].start_stack[t_p]  # add stack at beginning of previous hand + outcome of previous hand
+                        self.hands[str(t_h_num)].start_stack[t_p] = t_s + self.hands[str(t_h_num - 1)].start_stack[
+                            t_p]  # add stack at beginning of previous hand + outcome of previous hand
                     except KeyError:
                         pass
 
@@ -181,7 +214,8 @@ class Game:
             for t_p, t_s in self.hands[str(self.end_hand)].outcomes.items():
                 self.final_outcome.update({t_p: self.final_outcome[t_p] + t_s})
             if sum(self.final_outcome.values()) != 0:
-                print('WARNING: Final outcome of game %s is not zero-sum over all players, %f unaccounted for' % (self.number, sum(self.final_outcome.values())))
+                print('WARNING: Final outcome of game %s is not zero-sum over all players, %f unaccounted for' % (
+                self.number, sum(self.final_outcome.values())))
 
         return None
 
@@ -208,7 +242,8 @@ class Game:
 
     def drop_bad_hands(self, hand_num_null_TF=True):
         t_num_hands_dropped = 0
-        t_hand_numbers = list(self.hands.keys())    # structured as such so that dictionary doesn't change size during iteration
+        t_hand_numbers = list(
+            self.hands.keys())  # structured as such so that dictionary doesn't change size during iteration
         for t_h_num in t_hand_numbers:
             t_pop = False
             if hand_num_null_TF:
@@ -244,7 +279,6 @@ class Player:
         self.cards = None
         self.odds = None
         self.stacks = None
-        self.looseness = None
 
     def get_game_numbers(self, games_ff):
         return [x for x in games_ff.keys() if self.name in games_ff[x].players]
@@ -269,7 +303,8 @@ class Player:
             t_hand_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
                 try:
-                    t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].odds[self.name]['both_hole_premium_cards']})
+                    t_hand_dict.update(
+                        {str(t_h_num): t_g.hands[str(t_h_num)].odds[self.name]})
                 except KeyError:
                     pass
             t_odds_dict.update({t_g_num: t_hand_dict})
@@ -311,7 +346,8 @@ class Player:
             t_hand_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
                 t_hand_dict.update({str(t_h_num): {'big': t_g.hands[str(t_h_num)].big_blind == self.name,
-                                                   'small': t_g.hands[str(t_h_num)].small_blind == self.name}})     # self = p
+                                                   'small': t_g.hands[
+                                                                str(t_h_num)].small_blind == self.name}})  # self = p
             t_blind_dict.update({t_g_num: t_hand_dict})
         return t_blind_dict
 
