@@ -50,5 +50,7 @@ def pre_flop_strength_1():
         else:
             # According to Sklansky the remaining cards fall into group 9
             group = 9
-
+    print(group)
     return group
+
+pre_flop_strength_1()
