@@ -4,7 +4,6 @@ import numpy as np
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
 from assumption_calc_functions import *
-from game_classes import *
 
 
 class Option:

@@ -196,11 +196,12 @@ def create_base_df_wrapper(players_f):
               '\n\tSee: df_player_game_stack_check_sum')
 
     # add additional features
-    df['prev_outcome_loss'] = df.prev_outcome < 0
-    df['preflop_fold'] = df['preflop_action'] == 'f'
+    df['prev_outcome_loss'] = (df.prev_outcome < 0)
+    df['preflop_fold'] = (df['preflop_action'] == 'f')
     df['relative_start_stack'] = df['start_stack'] / df.groupby(['game', 'hand'])['start_stack'].transform('max')
     df['rank_start_stack'] = df.groupby(['game', 'hand'])['start_stack'].rank(method='max', ascending=False)
-    df['any_blind'] = df['small_blind'] | df['big_blind']
+    df['any_blind'] = (df['small_blind'] | df['big_blind'])
+    df['bot_TF'] = (df['player'] == 'Pluribus')
 
     if df.groupby(['game', 'hand']).rank_start_stack.max().min() != 6:
         print('WARNING: stack rankings within game and hand do not always range from 1 to 6. Check data frame.')
@@ -256,27 +257,48 @@ print(df_prop_test)
 # df = create_base_df_wrapper(players)    ########
 
 # create training data
-X_col_name = ['any_blind', 'prev_outcome_loss', 'slansky_rank', 'rank_start_stack']     # chen_rank, slansky_rank, premium_hole
+X_col_name = ['any_blind', 'slansky_rank', 'rank_start_stack']     # 'any_blind', 'prev_outcome_loss', 'slansky_rank', 'rank_start_stack', 'bot_TF'; chen_rank, slansky_rank, premium_hole
 y_col_name = ['preflop_fold']
-dummy_vars = {'player': 'Pluribus'}  # base field name: value to drop for identification; if value is None, then no dummies are dropped
+
+dummy_vars = {'player': 'Pluribus'}  # {'player': 'Pluribus'} base field name: value to drop for identification; if value is None, then no dummies are dropped
+
+# interaction_vars = {}
+# interaction_vars = {'loss_bot': {'var1name': 'prev_outcome_loss', 'var2name': 'bot_TF'}}
+interaction_vars = dict()
+[interaction_vars.update({'loss_' + p: {'var1name': 'prev_outcome_loss', 'var2name': p}}) for p in df.player.unique() if p != 'Pluribus']
+
 add_const = False
+
+df_logistic = df.reindex()
+print('Base regression data set has %d observations and %d columns' % df_logistic.shape)
 
 # process dummy vars
 if len(dummy_vars) > 0:
-    df_logistic = df[X_col_name + list(dummy_vars.keys()) + y_col_name].dropna().reindex()
+    t_df = pd.DataFrame()
     for t_name, t_excl in dummy_vars.items():
         t_df_dummies = pd.get_dummies(df_logistic[t_name])
-        if t_excl is not None:
-            t_cols_to_drop = [t_name, t_excl]
-        else:
-            t_cols_to_drop = [t_name]
-        del t_excl, t_name
-        df_logistic = pd.concat([df_logistic, t_df_dummies], axis=1).drop(columns=t_cols_to_drop)
-        X_col_name = [x for x in df_logistic.columns if x != y_col_name[0]]
-        del t_cols_to_drop, t_df_dummies
-else:
-    df_logistic = df[X_col_name + y_col_name].dropna().reindex()
-print('Regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
+        t_df = pd.concat([t_df, t_df_dummies], axis=1).drop(columns=t_excl if t_excl is not None else t_df_dummies.columns[0])
+        del t_df_dummies
+    del t_name, t_excl
+    df_logistic = pd.concat([df_logistic, t_df], axis=1)
+    X_col_name = X_col_name + list(t_df.columns)
+    del t_df
+    print('After adding dummies, regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
+
+# process interaction terms
+if len(interaction_vars) > 0:
+    t_df = pd.DataFrame()
+    for t_name, t_vars in interaction_vars.items():
+        t_df[t_name] = df_logistic.loc[:, t_vars['var1name']].astype(float) * df_logistic.loc[:, t_vars['var2name']].astype(float)
+    del t_name, t_vars
+    df_logistic = pd.concat([df_logistic, t_df], axis=1)
+    X_col_name = X_col_name + list(t_df.columns)
+    del t_df
+    print('After adding interaction terms regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
+
+# drop bad rows for regression
+df_logistic = df_logistic[X_col_name + y_col_name].dropna().reindex()
+print('After dropping rows with null, %d observations and %d columns (incl. dependent) remain' % df_logistic.shape)
 
 if add_const:
     sm_result = sm.Logit(endog=df_logistic[y_col_name],
@@ -284,6 +306,13 @@ if add_const:
 else:
     sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=df_logistic[X_col_name].astype(float)).fit()
 print(sm_result.summary2())
+
+# print('Aggregate player specific effects: player dummy plus player * prev hand loss')
+# for p in df.player.unique():
+#     try:
+#         print('%s: %3.1f' % (p, sm_result.params[p] + sm_result.params['loss_' + p]))
+#     except KeyError:
+#         pass
 
 
 # ---- Comparison of traditional player style metrics -----
