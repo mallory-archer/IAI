@@ -108,3 +108,6 @@ venv.bak/
 
 # data files
 python_hand_data.pickle
+*.csv
+*.png
+*.pickle

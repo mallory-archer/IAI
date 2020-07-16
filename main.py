@@ -151,7 +151,8 @@ def create_player_df(player_f):
                                   'premium_hole': player_f.odds[t_g_num][str(h_num)]['both_hole_premium_cards'],
                                   'chen_rank': player_f.odds[t_g_num][str(h_num)]['chen'],
                                   'slansky_rank': player_f.odds[t_g_num][str(h_num)]['slansky'],
-                                  'start_stack': player_f.stacks[t_g_num][str(h_num)]
+                                  'start_stack': player_f.stacks[t_g_num][str(h_num)],
+                                  'seat_numbers': player_f.seat_numbers[t_g_num][str(h_num)]
                                   })
             except KeyError:
                 pass
@@ -257,7 +258,7 @@ print(df_prop_test)
 # df = create_base_df_wrapper(players)    ########
 
 # create training data
-X_col_name = ['any_blind', 'slansky_rank', 'rank_start_stack']     # 'any_blind', 'prev_outcome_loss', 'slansky_rank', 'rank_start_stack', 'bot_TF'; chen_rank, slansky_rank, premium_hole
+X_col_name = ['any_blind', 'slansky_rank', 'rank_start_stack', 'seat_numbers']     # 'any_blind', 'prev_outcome_loss', 'slansky_rank', 'rank_start_stack', 'bot_TF'; chen_rank, slansky_rank, premium_hole
 y_col_name = ['preflop_fold']
 
 dummy_vars = {'player': 'Pluribus'}  # {'player': 'Pluribus'} base field name: value to drop for identification; if value is None, then no dummies are dropped

@@ -1,5 +1,6 @@
 import json
-from odds_functions import slansky_strength, chen_strength
+from odds_functions import slansky_strength, chen_strength, exp_val_implied_prob, est_prob_slansky
+from params import slansky_prob_dict
 
 
 class Hand:
@@ -56,7 +57,6 @@ class Hand:
             return None
 
     def get_odds(self):
-        # simplistic proxy - could be refined
         try:
             t_cards = self.cards['hole_cards']
             premium_cards_f = {'A', 'K', 'Q', 'J'}
@@ -76,6 +76,16 @@ class Hand:
                 try:
                     # get Sklansky hand strength
                     t_dict.update({'slansky': slansky_strength(v[0:4])})
+                except:
+                    pass
+                # try:
+                #     # get implied prob of winning from expected values observed on online poker website
+                #     t_dict.update({'online_prob': exp_val_implied_prob(v[0:4])})
+                # except:
+                #     pass
+                try:
+                    # get implied prob of winning derived from this data set, slansky ranks, and hand outcomes
+                    t_dict.update({'slansky_prob': est_prob_slansky(slansky_strength(v[0:4]), slansky_prob_dict)})
                 except:
                     pass
 
@@ -273,6 +283,7 @@ class Player:
     def __init__(self, name=None):
         self.name = name
         self.game_numbers = None
+        self.seat_numbers = None
         self.actions = None
         self.outcomes = None
         self.blinds = None
@@ -282,6 +293,19 @@ class Player:
 
     def get_game_numbers(self, games_ff):
         return [x for x in games_ff.keys() if self.name in games_ff[x].players]
+
+    def get_seat_numbers(self, games_ff):
+        t_seat_dict = dict()
+        for t_g_num in self.game_numbers:
+            t_g = games_ff[t_g_num]
+            t_hand_dict = dict()
+            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+                try:
+                    t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].players.index(self.name) + 1})
+                except:
+                    pass
+            t_seat_dict.update({t_g_num: t_hand_dict})
+        return t_seat_dict
 
     def get_game_cards(self, games_ff):
         t_card_dict = dict()
@@ -382,6 +406,7 @@ class Player:
 
     def add_games_info(self, games_f):
         self.game_numbers = self.get_game_numbers(games_f)
+        self.seat_numbers = self.get_seat_numbers(games_f)
         self.actions = self.get_game_actions(games_f)
         self.outcomes = self.get_game_outcomes(games_f)
         self.blinds = self.get_blinds(games_f)

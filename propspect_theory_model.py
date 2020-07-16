@@ -4,6 +4,7 @@ import numpy as np
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
 from assumption_calc_functions import *
+from params import exp_loss_seat_dict, exp_win_seat_dict
 
 
 class Option:
@@ -238,22 +239,26 @@ def generate_synthetic_data(n_hands, params_actual, phi, success_event_name_f, f
 def generate_choice_situations(player_f, game_hand_index_f):
     choice_situations_f = list()
 
+    # calculate odds of winning select hands given starting hole cards
+
     for game_num, hands in game_hand_index_f.items():
         for hand_num in hands:
-            print('game %s hand %s' % (game_num, hand_num))
-            tplay_win_prob = 0.630 if player_f.odds[game_num][hand_num] else 0.126    # based on roll up prob of winning for a given player as a base assumption
-            tplay_win_payoff = 705  # based on average of winnings if player decides to play on first round AND wins
-            tplay_lose_payoff = -780    # based on average of winnings if player decides to play on first round AND loses
-
-            tfold_win_prob = 0  # cannot with under folding scenario
+            # print('game %s hand %s' % (game_num, hand_num))
             big_blind = 100
             small_blind = 50
+            payoff_units_f = 1
+
+            tplay_win_prob = player_f.odds[game_num][hand_num]['slansky_prob']
+            tplay_win_payoff = exp_win_seat_dict[str(player_f.seat_numbers[game_num][hand_num])]/payoff_units_f    # based on summary of data set, seat, slansky rank
+            tplay_lose_payoff = exp_loss_seat_dict[str(player_f.seat_numbers[game_num][hand_num])]/payoff_units_f  # based on summary of data set, seat, slansky rank
+
+            tfold_win_prob = 0  # cannot win under folding scenario
             if player_f.blinds[game_num][hand_num]['big']:
-                tfold_lose_payoff = -big_blind
+                tfold_lose_payoff = (big_blind * -1)/payoff_units_f
             elif player_f.blinds[game_num][hand_num]['small']:
-                tfold_lose_payoff = -small_blind
+                tfold_lose_payoff = (small_blind * -1)/payoff_units_f
             else:
-                tfold_lose_payoff = 0
+                tfold_lose_payoff = 0/payoff_units_f
 
             t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
                                                               'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
@@ -286,19 +291,19 @@ games = data['games']
 df = data['df']
 
 # create player-specific game, hand index
-game_hand_player_index = create_game_hand_index(players[0])
-choice_situations = generate_choice_situations(players[0], game_hand_player_index)
+game_hand_player_index = create_game_hand_index(players[11])    # 11 is Budd, strong coef from linear regression
+choice_situations = generate_choice_situations(players[11], game_hand_player_index)
 
 # ------------ FIT MODEL -------------------
 # Optimization parameters
 maxiter = 100
-pgtol = 1e-8
-ftol = 1e-12
+pgtol = 1e-6
+ftol = 1e-8
 start_params = [0.5, 1, 0.5, 0.5, 0.5]
 bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 5), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]
 
 # Plotting parameters
-select_param_name1 = 'alpha'
+select_param_name1 = 'lambda'
 select_param_name2 = 'lambda'
 calc_contour_info = False
 n_1D_mesh_points = 5
@@ -425,4 +430,4 @@ p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_resu
                                                                               param_domain_f=dict(zip(param_names_actual, bounds_params)),
                                                                               calc_contour_info_f=calc_contour_info, select_param_name2_f=select_param_name2, n_1D_mesh_points=n_1D_mesh_points)
 
-plot_functions('alpha', p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, plot_LL_num_deriv=True, plot_num_analytical_deriv=True, plot_contour=True, XX_f=XX, YY_f=YY, LL_matrix_f=LL_matrix)
+plot_functions(select_param_name1, p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, plot_LL_num_deriv=True, plot_num_analytical_deriv=True, plot_contour=True, XX_f=XX, YY_f=YY, LL_matrix_f=LL_matrix)

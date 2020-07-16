@@ -112,3 +112,21 @@ def chen_strength(hole_cards):
         score += 1
 
     return int(ceil(score))
+
+
+def exp_val_implied_prob(hole_cards, prob_hand_dict_f):
+    hole_cards = hole_cards.upper()
+    try:
+        # for cases where suited matters, try that first
+        return prob_hand_dict_f[hole_cards[0] + hole_cards[2] + ('s' if hole_cards[1] == hole_cards[3] else '')]
+    except KeyError:
+        try:
+            # if suited doesn't matter so not broken out in dictionary then just look for card values
+            return prob_hand_dict_f[hole_cards[0] + hole_cards[2]]
+        except KeyError:
+            # if probability of hand isn't in table, return None
+            return None
+
+
+def est_prob_slansky(slansky_rank_f, prob_hand_dict_f):
+    return prob_hand_dict_f[str(slansky_rank_f)]
