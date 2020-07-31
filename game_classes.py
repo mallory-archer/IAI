@@ -1,6 +1,7 @@
 import json
 from odds_functions import slansky_strength, chen_strength, exp_val_implied_prob, est_prob_slansky
 from params import slansky_prob_dict
+from scipy.stats import rankdata
 
 
 class Hand:
@@ -16,6 +17,7 @@ class Hand:
         self.outcomes = self.get_outcomes()
         self.missing_fields = list()
         self.start_stack = None  # calculated in Game object because it is based on change log of previous hands
+        self.start_stack_rank = None  # calculated in Game object because it is based on start_stack, which is change log of previous hands
 
         # check for initialization of select attributes
         self.check_player_completeness()
@@ -204,6 +206,8 @@ class Game:
         else:
             self.hands[str(self.start_hand)].start_stack = dict(
                 zip(self.players, [0] * len(self.players)))  # stack at beginning of game (all players set at 0)
+            self.hands[str(self.start_hand)].start_stack_rank = dict(
+                zip(self.hands[str(self.start_hand)].start_stack.keys(), rankdata([-i for i in self.hands[str(self.start_hand)].start_stack.values()], method='max')))  # account for shifted loop iteration
             for t_h_num in range(int(self.start_hand) + 1, int(self.end_hand) + 1):
                 self.hands[str(t_h_num)].start_stack = self.hands[
                     str(t_h_num - 1)].start_stack.copy()  # initialize stack dictionary for hand
@@ -219,6 +223,9 @@ class Game:
                     except KeyError:
                         pass
 
+                # get rankings of stacks based on relative stack sizes
+                self.hands[str(t_h_num)].start_stack_rank = dict(zip(self.hands[str(t_h_num)].start_stack.keys(), rankdata([-i for i in self.hands[str(t_h_num)].start_stack.values()], method='max')))
+                
             # add total game outcome to game object
             self.final_outcome = self.hands[str(self.end_hand)].start_stack.copy()
             for t_p, t_s in self.hands[str(self.end_hand)].outcomes.items():
@@ -290,6 +297,7 @@ class Player:
         self.cards = None
         self.odds = None
         self.stacks = None
+        self.stack_ranks = None
 
     def get_game_numbers(self, games_ff):
         return [x for x in games_ff.keys() if self.name in games_ff[x].players]
@@ -379,11 +387,21 @@ class Player:
         t_stack_dict = dict()
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
-            t_hand_dict = dict()
+            t_hand_stack_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
-                t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack[self.name]})
-            t_stack_dict.update({t_g_num: t_hand_dict})
+                t_hand_stack_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack[self.name]})
+            t_stack_dict.update({t_g_num: t_hand_stack_dict})
         return t_stack_dict
+
+    def get_stack_ranks(self, games_ff):
+        t_stack_rank_dict = dict()
+        for t_g_num in self.game_numbers:
+            t_g = games_ff[t_g_num]
+            t_hand_stack_rank_dict = dict()
+            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+                t_hand_stack_rank_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack_rank[self.name]})
+            t_stack_rank_dict.update({t_g_num: t_hand_stack_rank_dict})
+        return t_stack_rank_dict
 
     def calc_looseness(self, select_hands_ff=None):
         # if no subset is prescribed for calculation use all available player data
@@ -413,6 +431,7 @@ class Player:
         self.cards = self.get_game_cards(games_f)
         self.odds = self.get_game_odds(games_f)
         self.stacks = self.get_stacks(games_f)
+        self.stack_ranks = self.get_stack_ranks(games_f)
         self.looseness, _, _ = self.calc_looseness()
 
     def print(self):

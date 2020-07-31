@@ -97,6 +97,7 @@ _, _, _, _ = meta_game_stats(games)
 print("\nCombining games with 'b' appended to filename\n")
 games_b = [x for x in games.keys() if x.find('b') > -1]
 for g1, g2 in zip([x.split('b')[0] for x in games_b], games_b):
+    print('For pair %s and %s, %s missing %s and %s missing %s' % (g1, g2, g1, games[g2].players - games[g1].players, g2, games[g1].players - games[g2].players))
     games[g1].combine_games(games[g2], print_f=False)
     games.pop(g2)
 del g1, g2, games_b
@@ -152,6 +153,7 @@ def create_player_df(player_f):
                                   'chen_rank': player_f.odds[t_g_num][str(h_num)]['chen'],
                                   'slansky_rank': player_f.odds[t_g_num][str(h_num)]['slansky'],
                                   'start_stack': player_f.stacks[t_g_num][str(h_num)],
+                                  'start_stack_rank': player_f.stack_ranks[t_g_num][str(h_num)],
                                   'seat_numbers': player_f.seat_numbers[t_g_num][str(h_num)]
                                   })
             except KeyError:
