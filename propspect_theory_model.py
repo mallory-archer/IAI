@@ -1,10 +1,9 @@
-# add phi as param
-# set up infrastructre to compare pre and post by player
-# examine effect on player by stack size
+# examine effect on player by stack size (create loop)
 
 # ------ Fit prospect theory model -----
 import random
 import numpy as np
+import pandas as pd
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
 from assumption_calc_functions import *
@@ -12,6 +11,7 @@ from params import exp_loss_seat_dict, exp_win_seat_dict
 from sklearn.metrics import confusion_matrix
 import pickle
 import matplotlib.pyplot as plt
+import copy
 
 
 class Option:
@@ -27,10 +27,13 @@ class Option:
 
 
 class ChoiceSituation:
-    def __init__(self, sit_options, sit_choice=None):
+    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, post_loss=None):
         self.options = sit_options
         self.option_names = [x.name for x in sit_options]
         self.choice = sit_choice
+        self.slansky_strength = slansky_strength
+        self.stack_rank = stack_rank
+        self.post_loss = post_loss
         self.values = None
         self.prob_options = None
         self.prob_choice = None
@@ -77,6 +80,7 @@ class ProspectModel(GenericLikelihoodModel):
         self.beta_f = None
         self.gamma_f = None
         self.delta_f = None
+        self.phi_f = None
 
     # refresh choice sitaution values under updated model parameters
     def refresh_choice_situation_values(self):
@@ -91,9 +95,16 @@ class ProspectModel(GenericLikelihoodModel):
         # print(self.choice_probs)
         self.alpha_f = params[0]
         self.lambda_f = params[1]
-        self.beta_f = self.alpha_f #params[2]  #### set equal to self.alpha_f rather than params[2]
-        self.gamma_f = params[2]    #### decrease index by 1
-        self.delta_f = params[3]    #### decrease index by 1
+        if self.constrain_beta:
+            self.beta_f = self.alpha_f  # self.alpha_f #### set equal to self.alpha_f rather than params[2]
+            self.gamma_f = params[2]    #### decrease index by 1
+            self.delta_f = params[3]    #### decrease index by 1
+            self.phi_f = params[4]      #### decrease index by 1
+        else:
+            self.beta_f = params[2]
+            self.gamma_f = params[3]
+            self.delta_f = params[4]
+            self.phi_f = params[5]
 
         # -- for given evaluation of likelihood at current value of params, calculate choice information
         self.refresh_choice_situation_values()
@@ -105,8 +116,7 @@ class ProspectModel(GenericLikelihoodModel):
 
     # replaces default gradient loglikelihood for each observation (Jacobian)
     def score_obs(self, params, **kwds):
-        def calc_grad(options_ff, j_chosen_ff, prob_choice_ff, alpha_ff, lambda_ff, beta_ff, gamma_ff, delta_ff,
-                      phi_ff):
+        def calc_grad(options_ff, j_chosen_ff, prob_choice_ff, alpha_ff, lambda_ff, beta_ff, gamma_ff, delta_ff, phi_ff):
             # d(LL)/d(x) = sum[(1/Pr) * d(Pr)/d(x)]
             # d(Pr)/d(x=alpha, beta, lambda) = d(Pr)/d(V) * d(V)/d(v) * d(v)/d(x=alpha, beta, lambda)
             # d(Pr)/d(x=c=gamma, delta)      = d(Pr)/d(V) * d(V)/d(pi) * d(pi)/d(x=c=gamma, delta)
@@ -134,7 +144,10 @@ class ProspectModel(GenericLikelihoodModel):
                                  gamma_ffff, delta_ffff):
                 # for each parameter, returns d_v_d_parameter, d_pi_d_parameter
                 if select_param_ffff == 'alpha':
-                    return d_v_d_alpha(x_fff=payoff_ffff, alpha_fff=alpha_ffff), 0
+                    if self.constrain_beta:
+                        return d_v_d_alpha(x_fff=payoff_ffff, alpha_fff=alpha_ffff) + d_v_d_beta(x_fff=payoff_ffff, beta_fff=beta_ffff, lambda_fff=lambda_ffff), 0
+                    else:
+                        return d_v_d_alpha(x_fff=payoff_ffff, alpha_fff=alpha_ffff), 0
                 if select_param_ffff == 'lambda':
                     return d_v_d_lambda(x_fff=payoff_ffff, beta_fff=beta_ffff), 0
                 if select_param_ffff == 'beta':
@@ -145,6 +158,8 @@ class ProspectModel(GenericLikelihoodModel):
                 if select_param_ffff == 'delta':
                     return 0, d_pi_d_c(p_fff=prob_ffff, c_fff=delta_ffff) if (
                                 payoff_ffff < 0) else 0  # f payoff is >= 0, then gamma is used and delta doesn't factor in
+                if select_param_ffff == 'phi':
+                    return 0, 0
 
             def d_Voutcome_d_x(v_ffff, pi_ffff, d_v_d_x_ffff, d_pi_d_x_ffff):
                 # d(V) / d(param) = d(v * pi) = [d(v)/d(param) * pi] + [v * d(pi)/d(param)]
@@ -173,17 +188,26 @@ class ProspectModel(GenericLikelihoodModel):
                     for j_opt in options_fff]
 
                 # calc components common across derivatives
-                t_exp_option_vals = [calc_exp_option_value(
-                    j_opt.calc_option_value(alpha_fff, lambda_fff, beta_fff, gamma_fff, delta_fff), phi_fff)
-                                     for j_opt in options_fff]
+                t_option_vals = [j_opt.calc_option_value(alpha_fff, lambda_fff, beta_fff, gamma_fff, delta_fff) for j_opt in options_fff]
+                t_exp_option_vals = [calc_exp_option_value(j_opt_val, phi_fff) for j_opt_val in t_option_vals]
 
-                f_f = t_exp_option_vals[j_chosen_fff]
-                g_f = sum(t_exp_option_vals)
-                f_prime_f = phi_fff * t_exp_option_vals[j_chosen_fff] * t_d_V_dx_options[j_chosen_fff]
-                g_prime_f = phi_fff * np.dot(t_exp_option_vals, t_d_V_dx_options)
-                return (f_prime_f * g_f - g_prime_f * f_f) / (g_f ** 2)
+                if d_param_fff != 'phi':
+                    f_f = t_exp_option_vals[j_chosen_fff]
+                    g_f = sum(t_exp_option_vals)
+                    f_prime_f = phi_fff * t_exp_option_vals[j_chosen_fff] * t_d_V_dx_options[j_chosen_fff]
+                    g_prime_f = phi_fff * np.dot(t_exp_option_vals, t_d_V_dx_options)
+                    return (f_prime_f * g_f - g_prime_f * f_f) / (g_f ** 2)
+                else:
+                    f_f = t_exp_option_vals[j_chosen_fff]
+                    g_f = sum(t_exp_option_vals)
+                    f_prime_f = t_exp_option_vals[j_chosen_fff] * t_option_vals[j_chosen_fff]
+                    g_prime_f = np.dot(t_exp_option_vals, t_option_vals)
+                    return (f_prime_f * g_f - g_prime_f * f_f) / (g_f ** 2)
 
-            grad_params_f = ['alpha', 'lambda', 'beta', 'gamma', 'delta']   #### remove 'beta' between 'lambda' and 'gamma'
+            if self.constrain_beta:
+                grad_params_f = ['alpha', 'lambda', 'gamma', 'delta', 'phi']   #### remove 'beta' between 'lambda' and 'gamma'
+            else:
+                grad_params_f = ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi']
             grad_values_f = list()
             for t_select_param in grad_params_f:
                 grad_values_f.append(
@@ -199,17 +223,17 @@ class ProspectModel(GenericLikelihoodModel):
         self.loglikeobs(params)  # may be able to remove this to halve the amount of execution time
 
         jacob_f = list()
-        for cs_f in model.choice_situations_f:
+        for cs_f in self.choice_situations_f:
             t_grad = calc_grad(options_ff=cs_f.options, j_chosen_ff=cs_f.get_choice_location(cs_f.choice),
                                prob_choice_ff=cs_f.prob_choice,
                                alpha_ff=self.alpha_f, lambda_ff=self.lambda_f, beta_ff=self.beta_f,
                                gamma_ff=self.gamma_f, delta_ff=self.delta_f,
                                phi_ff=self.phi_f)
-            jacob_f.append([t_grad[t_key] for t_key in ['alpha', 'lambda', 'beta', 'gamma', 'delta'] if t_key in list(t_grad.keys())])  # robust to dropping parameters (constraining)
-        return np.array(jacob_f)  # np.sum(np.array(jacob_f), axis=0)
+            jacob_f.append([t_grad[t_key] for t_key in ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi'] if t_key in list(t_grad.keys())])  # robust to dropping parameters (constraining)
+        return np.array(jacob_f)
 
 
-def generate_synthetic_data(n_hands, params_actual, phi_f, success_event_name_f, fail_event_name_f):
+def generate_synthetic_data(n_hands, params_actual):
     choice_situations = list()
     for n in range(0, n_hands):
         t1_win_prob = random.random()
@@ -228,7 +252,7 @@ def generate_synthetic_data(n_hands, params_actual, phi_f, success_event_name_f,
                                                                          beta_f=params_actual['beta'],
                                                                          gamma_f=params_actual['gamma'],
                                                                          delta_f=params_actual['delta'])
-        t_choice_situation.prob_options = t_choice_situation.get_option_probs(phi_f=phi_f)
+        t_choice_situation.prob_options = t_choice_situation.get_option_probs(phi_f=params_actual['phi'])
         t_choice_situation.choice = (t_choice_situation.option_names[0] if random.random() < t_choice_situation.get_prob_choice(t_choice_situation.option_names[0]) else t_choice_situation.option_names[1])
         choice_situations.append(t_choice_situation)
         del t_choice_situation
@@ -237,7 +261,7 @@ def generate_synthetic_data(n_hands, params_actual, phi_f, success_event_name_f,
     return choice_situations
 
 
-def generate_choice_situations(player_f, game_hand_index_f, select_slansky_ranks_ff=None, select_stack_ranks_ff=None):
+def generate_choice_situations(player_f, game_hand_index_f, df_f=None):
     choice_situations_f = list()
 
     # calculate odds of winning select hands given starting hole cards
@@ -264,35 +288,86 @@ def generate_choice_situations(player_f, game_hand_index_f, select_slansky_ranks
             t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
                                                               'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
                                 Option(name='fold', outcomes={'lose': {'payoff': tfold_lose_payoff, 'prob': 1 - tfold_win_prob}})]  # 'win': {'payoff': draw_payoff(), 'prob': tfold_win_prob}
-            t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:], sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop']=='f' else "play")
 
-            # optional filtering
-            if (select_slansky_ranks_ff is not None) and (select_stack_ranks_ff is not None):
-                t_hand_strength_criterion = player_f.odds[game_num][hand_num]['slansky'] in select_slansky_ranks_ff #####
-                t_stack_size_criterion = player_f.stack_ranks[game_num][hand_num] in select_stack_ranks_ff #####
-                if t_hand_strength_criterion and t_stack_size_criterion:
-                    choice_situations_f.append(t_choice_situation)
-                del t_choice_situation
+            if df_f is not None:
+                t_post_loss_bool = df_f.loc[(df_f.player == player_f.name) &
+                                          (df_f.game == float(game_num)) &
+                                          (df_f.hand == float(hand_num)), 'prev_outcome_loss'].bool()
             else:
-                choice_situations_f.append(t_choice_situation)
+                t_post_loss_bool = None
+
+            t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:],
+                                                 sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop'] == 'f' else "play",
+                                                 slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
+                                                 stack_rank=player_f.stack_ranks[game_num][hand_num],
+                                                 post_loss=t_post_loss_bool)
+
+            choice_situations_f.append(t_choice_situation)
+
+            del t_choice_situation
     del game_num, hands, hand_num
     return choice_situations_f
 
 
+def filter_choice_situations(choice_situations_f, select_slansky_ranks_f=None, select_stack_ranks_f=None, select_type_loss_data_f=None):
+    ind_to_keep = list()
+
+    for t_ind_cs in range(0, len(choice_situations_f)):
+        t_keep_bool = True
+
+        # keep only select slansky ranks
+        if select_slansky_ranks_f is not None:
+            if choice_situations_f[t_ind_cs].slansky_strength not in select_slansky_ranks_f:
+                t_keep_bool = False
+
+        # keep only select stack ranks
+        if select_stack_ranks_f is not None:
+            if choice_situations_f[t_ind_cs].stack_rank not in select_stack_ranks_f:
+                t_keep_bool = False
+
+        # keep only select hands based on following loss or not
+        if select_type_loss_data_f is not None:
+            if (select_type_loss_data_f == 'post_loss') and (not choice_situations_f[t_ind_cs].post_loss):
+                t_keep_bool = False
+            if (select_type_loss_data_f == 'not_post_loss') and choice_situations_f[t_ind_cs].post_loss:
+                t_keep_bool = False
+
+        # pop element if filtered out on any condition
+        if t_keep_bool:
+            ind_to_keep.append(t_ind_cs)
+
+    return [copy.deepcopy(choice_situations_f[i]) for i in ind_to_keep]
+
+
+# for examining data characteristics
+def get_play_perc(choice_situations_f, select_slansky_ranks_f, select_stack_ranks_f):
+    t_play_count = 0
+    t_cond_sit_count = 0
+    for cs in choice_situations_f:
+        if (cs.slansky_strength in select_slansky_ranks_f) and (cs.stack_rank in select_stack_ranks_f):
+            t_cond_sit_count += 1
+            if cs.choice == 'play':
+                t_play_count += 1
+    return t_play_count/t_cond_sit_count, t_cond_sit_count
+
+
 # ------------- SET PARAMETERS ------------------------------
-phi = .05
-param_names_actual = ['alpha', 'lambda', 'beta', 'gamma', 'delta']  ### removed 'beta', between 'lambda' and 'gamma'
+param_names_actual = ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi']
 success_event_name = 'fold'
 fail_event_name = 'play'
-select_stack_ranks = [1, 2]
-select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-select_type_loss_data = ['post_loss', 'not_post_loss', 'all']
+select_stack_ranks = [1, 2, 3, 4, 5, 6, 7] # works for [3, 4]; [1, 2] and [5, 6] and [1, 2, 3, 4, 5, 6]  does not have interior solution for gamma
+select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9] # works for [1, 2, 8, 9]
+select_type_loss_data = ['all']     # 'post_loss', 'not_post_loss',
+constrain_beta_TF = True
 
 # ------------- GENERATE SYNTHETIC DATA ----------------------
-# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69]
+# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, 0.1]
 # params_actual = dict(zip(param_names_actual, param_values_actual))
-# n_hands = 1000
-# choice_situations = generate_synthetic_data(n_hands, params_actual, phi, success_event_name, fail_event_name)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
+# n_hands = 3000
+# choice_situations = generate_synthetic_data(n_hands, params_actual, success_event_name, fail_event_name)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
+#
+# select_players = ['Pluribus'] # Not used, only for matching structure of real data loops
+# select_player_comps = {'Pluribus': 'Pluribus'}  # Not used, only for matching structure of real data loops
 
 # -------------- PROCESS ACTUAL DATA ----------------------------
 with open("python_hand_data.pickle", 'rb') as f:
@@ -301,80 +376,60 @@ players = data['players']
 games = data['games']
 df = data['df']
 
-select_players = [p.name for p in players]   #### naive, should be selected by hand
-select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section
+# select_players = [p.name for p in players]   #### naive, should be selected by hand
+# select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section
+
+select_players = ['Budd']
+select_player_comps = {'Budd': 'Budd'}
 
 
 # --- configure data and run estimation
-def estimate_model(select_player, select_player_comps, select_type_loss_data, select_slansky_ranks_f, select_stack_ranks_f):
-    print('Creating data sets for %s' % select_player)
+def config_data(select_player, select_player_comps, select_type_loss_data, select_slansky_ranks_f, select_stack_ranks_f):
+    # ----- comment out for synthetic fitting -------
     # create player-specific game, hand index
+    print('Creating data sets for %s' % select_player)
     choice_situations = list()
-    for t_player in [i for i in range(0, len(players)) if
-                     players[i].name in select_player_comps[select_player]]:  # , 'Gogo', 'MrWhite', 'Hattori']]:
-        game_hand_player_index = create_game_hand_index(
-            players[t_player])  # 11 is Budd, strong coef from linear regression
-        t_choice_situations = generate_choice_situations(players[t_player], game_hand_player_index,
-                                                         select_slansky_ranks_ff=select_slansky_ranks_f, select_stack_ranks_ff=select_stack_ranks_f)
+    for t_player in [i for i in range(0, len(players)) if players[i].name in select_player_comps[select_player]]:  # , 'Gogo', 'MrWhite', 'Hattori']]:
+        game_hand_player_index = create_game_hand_index(players[t_player])  # 11 is Budd, strong coef from linear regression
+        t_choice_situations = generate_choice_situations(players[t_player], game_hand_player_index, df)  # select_slansky_ranks_ff=select_slansky_ranks_f, select_stack_ranks_ff=select_stack_ranks_f)
         choice_situations = choice_situations + t_choice_situations
     del t_choice_situations
 
-    # create player-specific game, hand indexes split by following loss and not (note: this can take ~ 20 seconds for one player)
-    choice_situations_post_lost = list()
-    choice_situations_not_post_lost = list()
-    for t_player in [i for i in range(0, len(players)) if
-                     players[i].name in select_player_comps[select_player]]:  # , 'Gogo', 'MrWhite', 'Hattori']]:
-        # separate hands into post-loss and not
-        game_hand_player_index = create_game_hand_index(
-            players[t_player])  # 11 is Budd, strong coef from linear regression
-        game_hand_player_index_not_post_loss = game_hand_player_index.copy()
-        game_hand_player_index_post_loss = dict()
-        for t_game_num, t_hands in game_hand_player_index_not_post_loss.items():
-            t_hands_post_loss = list()
-            for t_hand_num in t_hands:
-                if df.loc[(df.player == players[t_player].name) & (df.game == float(t_game_num)) & (
-                        df.hand == float(t_hand_num)), 'prev_outcome_loss'].bool():
-                    t_hands_post_loss.append(t_hands.pop(t_hands.index(t_hand_num)))
-            game_hand_player_index_post_loss.update({t_game_num: t_hands_post_loss})
-        del t_game_num, t_hands, t_hand_num, t_hands_post_loss
+    print("%d choice situations processed" % len(choice_situations))
 
-        # generate choice situations for post loss and not
-        t_choice_situations_post_loss = generate_choice_situations(players[t_player], game_hand_player_index_post_loss)
-        choice_situations_post_lost = choice_situations_post_lost + t_choice_situations_post_loss
+    # filter out slansky ranks, stack ranks, and data split for post loss vs. not
+    choice_situations_dict = dict()
+    for t_select_type_loss_data in select_type_loss_data:
+        choice_situations_dict.update({t_select_type_loss_data: filter_choice_situations(choice_situations,
+                                                                                         select_slansky_ranks_f=select_slansky_ranks_f,
+                                                                                         select_stack_ranks_f=select_stack_ranks_f,
+                                                                                         select_type_loss_data_f=t_select_type_loss_data)})
+        print("%d choice situations included for %s type of data" % (len(choice_situations_dict[t_select_type_loss_data]), t_select_type_loss_data))
+        print("%3.3f choose play for %d total situations" % get_play_perc(choice_situations_dict[t_select_type_loss_data], select_slansky_ranks_f, select_stack_ranks_f))
+    return choice_situations_dict
 
-        t_choice_situations_not_post_loss = generate_choice_situations(players[t_player],
-                                                                       game_hand_player_index_not_post_loss)
-        choice_situations_not_post_lost = choice_situations_not_post_lost + t_choice_situations_not_post_loss
 
-        del t_choice_situations_not_post_loss, t_choice_situations_post_loss
-
+def estimate_model(choice_situations_dict, select_type_loss_data, constrain_beta_TF):
     # ------------ FIT MODEL -------------------
     # Optimization parameters
     maxiter = 100
     pgtol = 1e-6
     ftol = 1e-8
-    start_params = [0.5, 1.75, 0.6, 0.6]  ### removed 0.5 as beta starting point
-    bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 10), (1e-2, 1 - 1e-2),
-                     (1e-2, 1 - 1e-2)]  ### removed (1e-2, 1 - 1e-2), as beta bounds
+    if constrain_beta_TF:
+        start_params = [0.5, 1.75, 0.6, 0.6, 0.2]  ### removed 0.5 as beta starting point
+        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 3), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]  ### removed (1e-2, 1 - 1e-2), as beta bounds
+    else:
+        start_params = [0.5, 1.75, 0.5, 0.6, 0.6, 0.2]
+        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 3), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]
 
     # --- Fit model
     model_results = dict()
+    models = dict()
     for type_loss_data in select_type_loss_data:
-        print('Estimating %s model' % type_loss_data)
-        # pick one of the three models: all choice situations, post-loss, and not-post-loss:
-        if type_loss_data == 'post_loss':
-            model = ProspectModel(
-                endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_post_lost]),
-                choice_situations_f=choice_situations_post_lost, phi_f=phi)  # replace phi_f=phi
-        elif type_loss_data == 'not_post_loss':
-            model = ProspectModel(
-                endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_not_post_lost]),
-                choice_situations_f=choice_situations_not_post_lost, phi_f=phi)  # replace phi_f=phi
-        else:
-            print('WARNING: specified type of data %s invalid. Using all data.' % type_loss_data)
-            model = ProspectModel(
-                endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations]),
-                choice_situations_f=choice_situations, phi_f=phi)  # replace phi_f=phi
+        print('\n\n\n\nEstimating %s model' % type_loss_data)
+        model = ProspectModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_dict[type_loss_data]]),
+                              choice_situations_f=choice_situations_dict[type_loss_data],
+                              constrain_beta=constrain_beta_TF)  # add arg: phi_f=phi to take out phi in deriv
 
         model_result = model.fit(start_params=start_params, method='LBFGS', maxiter=maxiter, disp=True,
                                  bounds=bounds_params, pgtol=pgtol, factr=ftol)
@@ -385,50 +440,89 @@ def estimate_model(select_player, select_player_comps, select_type_loss_data, se
             pass
         print('Gradient at solution: %s' % dict(zip(param_names_actual, model.score(model_result.params))))
         model_results.update({type_loss_data: model_result})
+        models.update({type_loss_data: model})
 
-    return model_results
+    return model_results, models
 
 player_model_results = dict()
+player_models = dict()
+player_choice_situations = dict()
 for t_select_player in select_players:
-    t_estimation_output = estimate_model(t_select_player, select_player_comps, select_type_loss_data, select_slansky_ranks, select_stack_ranks)
-    player_model_results.update({t_select_player: t_estimation_output})
-    del t_estimation_output
+    # get choice situaitons
+    t_choice_situations_dict = config_data(t_select_player, select_player_comps, select_type_loss_data, select_slansky_ranks, select_stack_ranks)
+    player_choice_situations.update({t_select_player: t_choice_situations_dict})
+
+    # estimate model
+    # t_estimation_output, t_model = estimate_model(t_choice_situations_dict, select_type_loss_data, constrain_beta_TF)    # choice_situations, choice_situations_post_loss, choice_situations_not_post_loss
+    # player_model_results.update({t_select_player: t_estimation_output})
+    # player_models.update({t_select_player: t_model})
+
+    # del t_estimation_output, t_model, t_choice_situations_dict
+
+
+# ------ Examine player descriptive stats; comment out or delete later -----------
+choice_situations = player_choice_situations['Budd']['all']
+df_play_perc = pd.DataFrame(index=select_slansky_ranks, columns=select_stack_ranks)
+df_num_obs = pd.DataFrame(index=select_slansky_ranks, columns=select_stack_ranks)
+for t_slansky_rank in select_slansky_ranks:
+    for t_stack_rank in select_stack_ranks:
+        t_slansky_rank = ([t_slansky_rank] if (type(t_slansky_rank) is not list) else t_slansky_rank)
+        t_stack_rank = ([t_stack_rank] if (type(t_stack_rank) is not list) else t_stack_rank)
+        t_perc, t_num = get_play_perc(choice_situations, t_slansky_rank, t_stack_rank)
+        df_play_perc.loc[t_slansky_rank, t_stack_rank] = round(t_perc*1e2, 1)
+        df_num_obs.loc[t_slansky_rank, t_stack_rank] = t_num
+print(df_play_perc)
+print(df_num_obs)
+
+for j in range(1, 8):
+    print(j, get_play_perc(choice_situations, [i for i in range(3, 10)], [j]))
+
+t_slansky = [1, 2, 3, 4, 7, 8, 9]    #[i for i in range(3, 10)]
+t_stacks = [2, 3]
+t = filter_choice_situations(player_choice_situations['Budd']['all'], select_slansky_ranks_f=t_slansky, select_stack_ranks_f=t_stacks, select_type_loss_data_f='all')
+get_play_perc(t, t_slansky, t_stacks)
+estimate_model({'all': t}, select_type_loss_data, constrain_beta_TF)
+
+# ---------------------------- END DELETE SECTION --------------------------------
+
 
 # create dataframe(s) for examination
-import pandas as pd
+# import pandas as pd
+#
+# param_locs = dict(zip(['alpha', 'lambda', 'gamma', 'delta'], [0, 1, 2, 3]))
+#
+# df_model_results_dict = dict()
+# for t_param, t_loc in param_locs.items():
+#     t_df = pd.DataFrame(columns=['all', 'post_loss', 'not_post_loss'])
+#     for t_player in player_model_results.keys():
+#         for t_type, t_model_result in player_model_results[t_player].items():
+#             t_df.loc[t_player, t_type] = t_model_result.params[t_loc]
+#     df_model_results_dict.update({t_param: t_df})
+#     del t_df
+#
+# for k, v in df_model_results_dict.items():
+#     print('\n')
+#     print('Parameter %s' % k)
+#     print(v)
 
-param_locs = dict(zip(['alpha', 'lambda', 'gamma', 'delta'], [0, 1, 2, 3]))
+# with open('model_results.pickle', 'wb') as f:
+#     pickle.dump(df_model_results_dict, f)
 
-df_model_results_dict = dict()
-for t_param, t_loc in param_locs.items():
-    t_df = pd.DataFrame(columns=['all', 'post_loss', 'not_post_loss'])
-    for t_player in player_model_results.keys():
-        for t_type, t_model_result in player_model_results[t_player].items():
-            t_df.loc[t_player, t_type] = t_model_result.params[t_loc]
-    df_model_results_dict.update({t_param: t_df})
-    del t_df
-
-for k, v in df_model_results_dict.items():
-    print('\n')
-    print('Parameter %s' % k)
-    print(v)
-
-
-
-
-m.params
 # =============== Graphical examination ====================
 # Plotting parameters
-select_param_name1 = 'gamma'
-select_param_name2 = 'alpha'
-param_names_fit = ['alpha', 'lambda', 'beta', 'gamma', 'delta']
+select_param_name1 = 'lambda'
+select_param_name2 = 'phi'
+param_names_fit = ['alpha', 'lambda', 'gamma', 'delta', 'phi']  ### removed beta
 calc_contour_info = True
 n_1D_mesh_points = 10
+plot_param_bounds = [(1e-2, 1 - 1e-2), (1e-2, 3), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]    ### removed beta bounds
 
-print('WARNING: number of params in names does not match number in values') if len(param_names_actual) != len(model_result.params) else None
+select_model_result = player_model_results['Pluribus']['all']
+select_model = player_models['Pluribus']['all']
+print('WARNING: number of params in names does not match number in values') if len(param_names_fit) != len(select_model_result.params) else None
 
 
-def get_result_info(select_param_name_f, param_names_f, param_values_f, param_domain_f, calc_contour_info_f=False, select_param_name2_f=None, n_1D_mesh_points=10):
+def get_result_info(select_model_f, select_param_name_f, param_names_f, param_values_f, param_domain_f, calc_contour_info_f=False, select_param_name2_f=None, n_1D_mesh_points=10):
     p_loc_in_params = param_names_f.index(select_param_name_f)
     p_vec = np.linspace(param_domain_f[select_param_name_f][0], param_domain_f[select_param_name_f][1], 25)
 
@@ -436,8 +530,8 @@ def get_result_info(select_param_name_f, param_names_f, param_values_f, param_do
     score_p = list()
     for p in p_vec[1:]:
         t_params = param_values_f[0:p_loc_in_params] + [p] + param_values_f[(p_loc_in_params + 1):]
-        LL_p.append(np.sum(model.loglikeobs(t_params)))
-        score_p.append(np.sum(model.score_obs(np.array(t_params))[:, p_loc_in_params]))
+        LL_p.append(np.sum(select_model_f.loglikeobs(t_params)))
+        score_p.append(np.sum(select_model_f.score_obs(np.array(t_params))[:, p_loc_in_params]))
     finite_diff_deriv_LL_p = [(LL_p[i_f] - LL_p[i_f - 1]) / (p_vec[i_f] - p_vec[i_f - 1]) for i_f in range(1, len(LL_p))]
 
     p_vec1 = None
@@ -456,7 +550,7 @@ def get_result_info(select_param_name_f, param_names_f, param_values_f, param_do
                 t_base_params = param_values_f.copy()
                 t_base_params[p_loc1] = p_vec1[i]
                 t_base_params[p_loc2] = p_vec2[j]
-                LL_matrix[i, j] = np.sum(model.loglikeobs(t_base_params))
+                LL_matrix[i, j] = np.sum(select_model_f.loglikeobs(t_base_params))
 
     return p_vec, LL_p, score_p, finite_diff_deriv_LL_p, {select_param_name_f: p_vec1}, {select_param_name2_f: p_vec2}, LL_matrix
 
@@ -532,11 +626,11 @@ def plot_functions(select_param_name_f, p_vec_f, LL_p_f, score_p_f=None, finite_
                  marker="o")
 
 
-# p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_result_info(select_param_name_f=select_param_name1, param_names_f=param_names_fit, param_values_f=list(model_result.params),
-#                                                                               param_domain_f=dict(zip(param_names_fit, bounds_params)),
-#                                                                               calc_contour_info_f=calc_contour_info, select_param_name2_f=select_param_name2, n_1D_mesh_points=n_1D_mesh_points)
-#
-# plot_functions(select_param_name1, p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, plot_LL_num_deriv=True, plot_num_analytical_deriv=True, plot_contour=True, XX_f=XX, YY_f=YY, LL_matrix_f=LL_matrix)
+p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, XX, YY, LL_matrix = get_result_info(select_model_f=select_model, select_param_name_f=select_param_name1, param_names_f=param_names_fit, param_values_f=list(select_model_result.params),
+                                                                                        param_domain_f=dict(zip(param_names_fit, plot_param_bounds)),
+                                                                                        calc_contour_info_f=calc_contour_info, select_param_name2_f=select_param_name2, n_1D_mesh_points=n_1D_mesh_points)
+
+plot_functions(select_param_name1, p_vec, LL_vec, score_vec, finite_diff_deriv_LL_vec, plot_LL_num_deriv=True, plot_num_analytical_deriv=True, plot_contour=True, XX_f=XX, YY_f=YY, LL_matrix_f=LL_matrix)
 
 # ---- AVP plots -----
 choice_actual = list()
@@ -551,8 +645,8 @@ del cs
 # ----- Confusion matrix -----
 print(confusion_matrix(choice_actual, choice_pred, labels=['fold', 'play']))
 
-
-#### investigate outcomes by player and hand strength #####
+#---------- ARCHIVE ----------------#
+#--- investigate outcomes by player and hand strength ---#
 # temp = df.groupby(['player', 'slansky_rank'])['preflop_fold'].apply(lambda x: x.value_counts()/x.count())
 # t_colors = dict(zip(list(df.player.unique()), ['fuchsia', 'green', 'yellow', 'blue', 'teal', 'orange', 'deeppink', 'black', 'mediumslateblue', 'orangered', 'saddlebrown', 'rebeccapurple', 'maroon', 'olive']))
 # for s in df.slansky_rank.unique():
@@ -564,7 +658,7 @@ print(confusion_matrix(choice_actual, choice_pred, labels=['fold', 'play']))
 # plt.legend(t_colors)
 
 
-####### Test quality of data by generating choice according to parameters #######
+#------ Test quality of data by generating choice according to parameters -----#
 # for cs in choice_situations:
 #     # cs.set_model_values(0.2, 1, 0.2, 0.6, 0.6, phi)  ### artificially fills in beta when alpha=beta constraint
 #     # cs.set_model_values(0.88, 2.25, 0.88, 0.61, 0.69, phi)    ### artificially fills in beta when alpha=beta constraint
