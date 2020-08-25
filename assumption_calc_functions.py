@@ -16,25 +16,28 @@ def calc_prob_winning(player_f, game_hand_index_f):
     # calc probability of winning hand with premium hole cards
     win_list = list()
     win_premium_hole_cards = list()
-    win_NOT_premium_hole_cards = list()
+    t_pass_count = 0
     for game_num, hands in game_hand_index_f.items():
         for hand_num in hands:
             try:
-                win_list.append(1 if player_f.outcomes[game_num][hand_num] > 0 else 0)
-                if player_f.odds[game_num][hand_num]:
-                    win_premium_hole_cards.append(1 if (player_f.outcomes[game_num][hand_num] > 0) else 0)
-                elif not player_f.odds[game_num][hand_num]:
-                    win_NOT_premium_hole_cards.append(1 if (player_f.outcomes[game_num][hand_num] > 0) else 0)
+                if player_f.outcomes[game_num][hand_num] > 0:
+                    win_list.append(1)
+                else:
+                    win_list.append(0)
+
+                if player_f.odds[game_num][hand_num]['both_hole_premium_cards']:
+                    if player_f.outcomes[game_num][hand_num] > 0:
+                        win_premium_hole_cards.append(1)
+                    else:
+                        win_premium_hole_cards.append(0)
             except KeyError:
-                pass
-    print('Out of %d hands surveyed, %3.3f were winning hands for player' % (
-    len(win_list), sum(win_list) / len(win_list)))
-    print('Out of %d hands surveyed, %3.3f were winning hands for player | premium hole cards' % (
-    len(win_premium_hole_cards), sum(win_premium_hole_cards) / len(win_premium_hole_cards)))
-    print('Out of %d hands surveyed, %3.3f were winning hands for player | NOT premium hole cards' % (
-    len(win_NOT_premium_hole_cards), sum(win_NOT_premium_hole_cards) / len(win_NOT_premium_hole_cards)))
+                t_pass_count += 1
 
+    print('\nOut of %d hands surveyed, %3.3f were winning hands for player %s' % (len(win_list), sum(win_list) / len(win_list), player_f.name))
+    print('Out of %d hands surveyed, %3.3f were winning hands for player %s | premium hole cards' % (len(win_premium_hole_cards), sum(win_premium_hole_cards) / len(win_premium_hole_cards), player_f.name))
+    print('Out of %d hands surveyed, %3.3f were winning hands for player %s | NOT premium hole cards\n' % (len(win_list) - len(win_premium_hole_cards), (len(win_premium_hole_cards) - sum(win_premium_hole_cards)) / (len(win_list) - len(win_premium_hole_cards)), player_f.name))
 
+#####
 def guess_blind_amount(player_f, game_hand_index_f):
     # guess blind amount
     outcome_big = list()
@@ -64,7 +67,7 @@ def guess_blind_amount(player_f, game_hand_index_f):
             except KeyError:
                 pass
 
-
+######
 def calc_exp_loss_wins(games_f, small_blind_f=50, big_blind_f=100):
     losses_dict = {'small_excl': {'sum': 0, 'count': 0}, 'big_excl': {'sum': 0, 'count': 0},
                    '1': {'sum': 0, 'count': 0}, '2': {'sum': 0, 'count': 0},
@@ -123,24 +126,89 @@ def calc_exp_loss_wins(games_f, small_blind_f=50, big_blind_f=100):
         
     return losses_dict, wins_dict
 
+# check why player objects don't have last hand as would be indicated by game objects
+# calculate player seat correctly after fixing above
+# add separation to include big blind
+# check number of observations used to get each percentage
+# check to see if marginal percentages make sense
 
-def calc_prob_winning_slansky_rank(games_f, small_blind_f=50, big_blind_f=100):
-    slanksy_prob_dict_f = {'1': {'win': 0, 'count': 0}, '2': {'win': 0, 'count': 0}, '3': {'win': 0, 'count': 0},
-                           '4': {'win': 0, 'count': 0}, '5': {'win': 0, 'count': 0}, '6': {'win': 0, 'count': 0},
-                           '7': {'win': 0, 'count': 0}, '8': {'win': 0, 'count': 0}, '9': {'win': 0, 'count': 0}}
+def calc_prob_winning_slansky_rank(games_f, players_f, small_blind_f=50, big_blind_f=100):
+    # slansky_prob_dict_f = {'1': {'win': 0, 'count': 0}, '2': {'win': 0, 'count': 0}, '3': {'win': 0, 'count': 0},
+    #                        '4': {'win': 0, 'count': 0}, '5': {'win': 0, 'count': 0}, '6': {'win': 0, 'count': 0},
+    #                        '7': {'win': 0, 'count': 0}, '8': {'win': 0, 'count': 0}, '9': {'win': 0, 'count': 0}}
+    players_map_f = dict(zip([p.name for p in players_f], list(range(0, len(players_f)))))
 
+    # {'slansky rank': {'seat': {'stack rank': {'win': '#', 'count': '#'}}}}
+    # get domains of slansky ranks, player seats, and stack ranks
+    t_max_slansky_rank = 1
+    t_max_seat = 7  ####
+    t_max_stack_rank = 1
     for g_num in games_f.keys():
         for h_num in games_f[g_num].hands.keys():
             for p in games_f[g_num].hands[h_num].outcomes.keys():
-                slanksy_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['count'] = \
-                slanksy_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['count'] + 1
-                if (games_f[g_num].hands[h_num].outcomes[p] > 0) and (
-                        games_f[g_num].hands[h_num].outcomes[p] != (small_blind_f + big_blind_f)):
-                    slanksy_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['win'] = \
-                    slanksy_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['win'] + 1
+                t_max_stack_rank = max(t_max_stack_rank, games_f[g_num].hands[h_num].start_stack_rank[p])
+                t_max_slansky_rank = max(t_max_slansky_rank, games_f[g_num].hands[h_num].odds[p]['slansky'])
 
-    for t_slansky_rank, t_dict in slanksy_prob_dict_f.items():
-        print('Prob of winning for Slansky rank %s: %3.1f%% (%d obs)' % (t_slansky_rank, t_dict['win'] / t_dict['count'] * 100, t_dict['count']))
+    # create dictionary placeholder
+    slansky_prob_dict_f = dict()
+    for rank in range(1, t_max_slansky_rank+1):
+        slansky_prob_dict_f.update({str(rank): {}})
+        for seat in range(1, t_max_seat+1):
+            slansky_prob_dict_f[str(rank)].update({str(seat): {}})
+            for stack in range(1, t_max_stack_rank+1):
+                slansky_prob_dict_f[str(rank)][str(seat)].update({str(stack): {'win': 0, 'count': 0}})
+                print('rank %d, seat %d, stack %d' % (rank, seat, stack))
+
+    # create counts
+    for g_num in games_f.keys():
+        for h_num in games_f[g_num].hands.keys():
+            for p in games_f[g_num].hands[h_num].outcomes.keys():
+                t_seat_num = str(random.choice(list(range(1, t_max_seat + 1)))) #####
+                t_stack_rank = str(games_f[g_num].hands[h_num].start_stack_rank[p])
+                slansky_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['count'] += 1
+                if games_f[g_num].hands[h_num].outcomes[p] > 0:
+                    slansky_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['win'] += 1
+
+    slansky_dfs_f = list()
+    for rank in slansky_prob_dict_f.keys():
+        t_df = pd.DataFrame(index=[str(i) for i in range(1, t_max_seat+1)], columns=[str(j) for j in range(1, t_max_stack_rank+1)])
+        for seat in slansky_prob_dict_f[rank].keys():
+            for stack in slansky_prob_dict_f[rank][seat].keys():
+                try:
+                    t_df.loc[seat, stack] = slansky_prob_dict_f[rank][seat][stack]['win']/slansky_prob_dict_f[rank][seat][stack]['count']
+                except ZeroDivisionError:
+                    print('No observations for rank %s seat %s stack %s' % (rank, seat, stack))
+        slansky_dfs_f.append(t_df)
+        print('perc. of wins for slansky rank %s by seat (rows) and stack rank (columns):' % rank)
+        print(t_df)
+        print('\n')
+        del t_df
+
+
+    # for g_num in games_f.keys():
+    #     for h_num in games_f[g_num].hands.keys():
+    #         for p in games_f[g_num].hands[h_num].outcomes.keys():
+    #             slansky_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['count'] += 1
+    #             if games_f[g_num].hands[h_num].outcomes[p] > 0:
+    #                 slansky_prob_dict_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['win'] += 1
+    #
+                # ignores games where outcome is just the blinds, meaning all players folded and big blind won by default
+                # if games_f[g_num].hands[h_num].outcomes[p] != (small_blind_f + big_blind_f):
+                #     slansky_prob_dict_excl_blind_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['count'] += 1
+                #     if games_f[g_num].hands[h_num].outcomes[p] > 0:
+                #         slansky_prob_dict_excl_blind_f[str(games_f[g_num].hands[h_num].odds[p]['slansky'])]['win'] += 1
+
+
+    print('Prob of winning for Slansky rank including hands with only winnings from blinds:')
+    for t_slansky_rank, t_dict in slansky_prob_dict_f.items():
+        print('Slansky rank %s: %3.1f%% (%d obs)' % (t_slansky_rank, t_dict['win'] / t_dict['count'] * 100, t_dict['count']))
     del t_slansky_rank, t_dict
+    print('\n')
 
-    return slanksy_prob_dict_f
+    # print('Prob of winning for Slansky rank EXCLUDING hands with only winnings from blinds:')
+    # for t_slansky_rank, t_dict in slansky_prob_dict_excl_blind_f.items():
+    #     print('Slansky rank %s: %3.1f%% (%d obs)' % (t_slansky_rank, t_dict['win'] / t_dict['count'] * 100, t_dict['count']))
+    # del t_slansky_rank, t_dict
+    # print('\n')
+    #
+    # return slansky_prob_dict_f, slansky_prob_dict_excl_blind_f
