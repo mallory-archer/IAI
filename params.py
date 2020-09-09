@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.optimize
-from assumption_calc_functions import calc_exp_loss_wins, calc_prob_winning_slansky_rank
+import assumption_calc_functions as acf
+import json
 
 
 def prob_winning_transform(args_list_f, exp_loss_f):
@@ -24,19 +25,37 @@ def prob_winning_transform(args_list_f, exp_loss_f):
 
 # --------- CALC PROB WINNING HANDS FROM ONLINE SITE (REQUIRES SENSITIVE ASSUMPTION ABOUT WIN/LOSS AMOUNTS)
 # exp_val_hand from https://www.tightpoker.com/poker_hands.html; values in units of big blinds
-exp_val_hand = {'AA': 2.32, 'KK': 1.67, 'QQ': 1.22, 'JJ': 0.86, 'AKs': 0.78, 'AQs': 0.59, 'TT': 0.58, 'AK': 0.51,
-                'AJs': 0.44, 'KQs': 0.39, '99': 0.38, 'ATs': 0.32, 'AQ': 0.31, 'KJs': 0.29, '88': 0.25, 'QJs': 0.23,
-                'KTs': 0.2, 'A9s': 0.19, 'AJ': 0.19, 'QTs': 0.17, 'KQ': 0.16, '77': 0.16, 'JTs': 0.15, 'A8s': 0.1,
-                'K9s': 0.09, 'AT': 0.08, 'A5s': 0.08, 'A7s': 0.08, 'KJ': 0.08, '66': 0.07, 'T9s': 0.05, 'A4s': 0.05,
-                'Q9s': 0.05, 'J9s': 0.04, 'QJ': 0.03, 'A6s': 0.03, '55': 0.02, 'A3s': 0.02, 'K8s': 0.01, 'KT': 0.01,
-                '98s': 0, 'T8s': 0, 'K7s': 0, 'A2s': 0, '87s': -0.02, 'QT': -0.02, 'Q8s': -0.02, '44': -0.03,
-                'A9': -0.03, 'J8s': -0.03, '76s': -0.03, 'JT': -0.03, '97s': -0.04, 'K6s': -0.04, 'K5s': -0.05,
-                'K4s': -0.05, 'T7s': -0.05}
+# exp_val_hand = {'AA': 2.32, 'KK': 1.67, 'QQ': 1.22, 'JJ': 0.86, 'AKs': 0.78, 'AQs': 0.59, 'TT': 0.58, 'AK': 0.51,
+#                 'AJs': 0.44, 'KQs': 0.39, '99': 0.38, 'ATs': 0.32, 'AQ': 0.31, 'KJs': 0.29, '88': 0.25, 'QJs': 0.23,
+#                 'KTs': 0.2, 'A9s': 0.19, 'AJ': 0.19, 'QTs': 0.17, 'KQ': 0.16, '77': 0.16, 'JTs': 0.15, 'A8s': 0.1,
+#                 'K9s': 0.09, 'AT': 0.08, 'A5s': 0.08, 'A7s': 0.08, 'KJ': 0.08, '66': 0.07, 'T9s': 0.05, 'A4s': 0.05,
+#                 'Q9s': 0.05, 'J9s': 0.04, 'QJ': 0.03, 'A6s': 0.03, '55': 0.02, 'A3s': 0.02, 'K8s': 0.01, 'KT': 0.01,
+#                 '98s': 0, 'T8s': 0, 'K7s': 0, 'A2s': 0, '87s': -0.02, 'QT': -0.02, 'Q8s': -0.02, '44': -0.03,
+#                 'A9': -0.03, 'J8s': -0.03, '76s': -0.03, 'JT': -0.03, '97s': -0.04, 'K6s': -0.04, 'K5s': -0.05,
+#                 'K4s': -0.05, 'T7s': -0.05}
 # run function "prob_winning_transform" from odds_functions once with the above param vector as the arg
 # prob_hand_dict = prob_winning_transform([exp_val_hand], -1)
 
 
 # --------------------- INFER WIN PROBABILITIES AND PAYOFFS FROM DATA SET ---------------------------
+# ---- Run summary functions on actual data to approximate win / loss probabilities and payoffs; output of acf function has other options for levels of aggregation
+# _, _, _, _, prob_rank_seat_dict, payoff_rank_seat_dict, _, _ = acf.calc_prob_winning_slansky_rank(games)
+# with open('slansky_prob_by_seat.json', 'w') as f:
+#     json.dump(prob_rank_seat_dict, f)
+# with open('slansky_payoff_by_seat.json', 'w') as f:
+#     json.dump(payoff_rank_seat_dict, f)
+
+# ---- Load previously calculated saved probabilities and payoffs ---
+with open('slansky_prob_by_seat.json', 'r') as f:
+    prob_rank_seat_dict = json.load(f)
+with open('slansky_payoff_by_seat.json', 'r') as f:
+    payoff_rank_seat_dict = json.load(f)
+
+
+# ====================== Archive ======================
+# from assumption_calc_functions import calc_exp_loss_wins, calc_prob_winning_slansky_rank
+
+
 # --- Run functions to calc values on data set
 # t_loss_dict, t_win_dict = calc_exp_loss_wins(games, small_blind_f=50, big_blind_f=100)
 # exp_loss_seat_dict = dict()
@@ -52,9 +71,10 @@ exp_val_hand = {'AA': 2.32, 'KK': 1.67, 'QQ': 1.22, 'JJ': 0.86, 'AKs': 0.78, 'AQ
 #     exp_win_seat_dict.update({t_pos: t_vals['sum']/t_vals['count']})
 # exp_win_seat_dict['2'] = exp_win_seat_dict['blinds_excl']    # use calculation excluding situation where big blind wins by default (all fold pre flop)
 # exp_win_seat_dict.pop('blinds_excl')
+#
+# exp_loss_seat_dict = {'1': -953.5334448160535, '2': -717.590701535907, '3': -796.9296875, '4': -903.4153225806451, '5': -958.1126914660831, '6': -989.2040636042403}
+# exp_win_seat_dict = {'1': 877.7987273945078, '2': 573.2828232971373, '3': 620.1804255319149, '4': 617.9281487743026, '5': 758.4563303994584, '6': 740.3076459963877}
 
-exp_loss_seat_dict = {'1': -953.5334448160535, '2': -717.590701535907, '3': -796.9296875, '4': -903.4153225806451, '5': -958.1126914660831, '6': -989.2040636042403}
-exp_win_seat_dict = {'1': 877.7987273945078, '2': 573.2828232971373, '3': 620.1804255319149, '4': 617.9281487743026, '5': 758.4563303994584, '6': 740.3076459963877}
 
 # --- Run functions to calc values on data set
 # t_slansky_prob_dict_f = calc_prob_winning_slansky_rank(games, small_blind_f=50, big_blind_f=100)
@@ -65,7 +85,6 @@ exp_win_seat_dict = {'1': 877.7987273945078, '2': 573.2828232971373, '3': 620.18
 # --- check
 # for t_key in slansky_prob_dict.keys():
 #     print('Exp. value for Slansky rank %s: %f' % (t_key, (slansky_prob_dict[t_key] * np.mean(list(exp_win_seat_dict.values())) + (1 - slansky_prob_dict[t_key]) * np.mean(list(exp_loss_seat_dict.values())))))
-
-slansky_prob_dict = {'1': 0.6569037656903766, '2': 0.532046332046332, '3': 0.458252427184466, '4': 0.375, '5': 0.2822977201609298,
-                     '6': 0.21596578759800428, '7': 0.14495040577096482, '8': 0.0891238670694864, '9': 0.046566386880523}
-
+#
+# slansky_prob_dict = {'1': 0.6569037656903766, '2': 0.532046332046332, '3': 0.458252427184466, '4': 0.375, '5': 0.2822977201609298,
+#                      '6': 0.21596578759800428, '7': 0.14495040577096482, '8': 0.0891238670694864, '9': 0.046566386880523}

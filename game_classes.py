@@ -1,6 +1,6 @@
 import json
 from odds_functions import slansky_strength, chen_strength, exp_val_implied_prob, est_prob_slansky
-from params import slansky_prob_dict
+# from params import slansky_prob_dict
 from scipy.stats import rankdata
 
 
@@ -85,11 +85,11 @@ class Hand:
                 #     t_dict.update({'online_prob': exp_val_implied_prob(v[0:4])})
                 # except:
                 #     pass
-                try:
-                    # get implied prob of winning derived from this data set, slansky ranks, and hand outcomes
-                    t_dict.update({'slansky_prob': est_prob_slansky(slansky_strength(v[0:4]), slansky_prob_dict)})
-                except:
-                    pass
+                # try:
+                #     # get implied prob of winning derived from this data set, slansky ranks, and hand outcomes
+                #     t_dict.update({'slansky_prob': est_prob_slansky(slansky_strength(v[0:4]), slansky_prob_dict)})
+                # except:
+                #     pass
 
                 if len(t_dict) > 0:
                     odds_dict_f.update({k: t_dict})

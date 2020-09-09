@@ -3,11 +3,12 @@
 # ------ Fit prospect theory model -----
 import random
 import numpy as np
-import pandas as pd
+# import pandas as pd
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
 from assumption_calc_functions import *
-from params import exp_loss_seat_dict, exp_win_seat_dict
+# from params import exp_loss_seat_dict, exp_win_seat_dict
+from params import prob_rank_seat_dict, payoff_rank_seat_dict
 from sklearn.metrics import confusion_matrix
 import pickle
 import matplotlib.pyplot as plt
@@ -267,8 +268,6 @@ def generate_synthetic_data(n_hands, params_actual):
 def generate_choice_situations(player_f, game_hand_index_f, df_f=None):
     choice_situations_f = list()
 
-    # calculate odds of winning select hands given starting hole cards
-
     for game_num, hands in game_hand_index_f.items():
         for hand_num in hands:
             # print('game %s hand %s' % (game_num, hand_num))
@@ -276,9 +275,12 @@ def generate_choice_situations(player_f, game_hand_index_f, df_f=None):
             small_blind = 50
             payoff_units_f = 1
 
-            tplay_win_prob = player_f.odds[game_num][hand_num]['slansky_prob']
-            tplay_win_payoff = exp_win_seat_dict[str(player_f.seat_numbers[game_num][hand_num])]/payoff_units_f    # based on summary of data set, seat, slansky rank
-            tplay_lose_payoff = exp_loss_seat_dict[str(player_f.seat_numbers[game_num][hand_num])]/payoff_units_f  # based on summary of data set, seat, slansky rank
+            t_slansky_rank = str(player_f.odds[game_num][hand_num]['slansky'])
+            t_seat_num = str(player_f.seat_numbers[game_num][hand_num])
+
+            tplay_win_prob = prob_rank_seat_dict[t_slansky_rank][t_seat_num]    # player_f.odds[game_num][hand_num]['slansky_prob']
+            tplay_win_payoff = payoff_rank_seat_dict[t_slansky_rank][t_seat_num]['avg_win']    # exp_win_seat_dict[str(player_f.seat_numbers[game_num][hand_num])]/payoff_units_f    # based on summary of data set, seat, slansky rank
+            tplay_lose_payoff = payoff_rank_seat_dict[t_slansky_rank][t_seat_num]['avg_loss']    # exp_loss_seat_dict[str(player_f.seat_numbers[game_num][hand_num])]/payoff_units_f  # based on summary of data set, seat, slansky rank
 
             tfold_win_prob = 0  # cannot win under folding scenario
             if player_f.blinds[game_num][hand_num]['big']:
@@ -308,7 +310,7 @@ def generate_choice_situations(player_f, game_hand_index_f, df_f=None):
             choice_situations_f.append(t_choice_situation)
 
             del t_choice_situation
-    del game_num, hands, hand_num
+    del game_num, hands, hand_num, t_slansky_rank, t_seat_num
     return choice_situations_f
 
 
@@ -384,11 +386,11 @@ df = data['df']
 # select_players = [p.name for p in players]   #### naive, should be selected by hand
 # select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section
 
-select_players = ['Pluribus']
-select_player_comps = {'Pluribus': 'Pluribus'}
+# select_players = ['Pluribus']
+# select_player_comps = {'Pluribus': 'Pluribus'}
 
-# select_players = ['Bill']
-# select_player_comps = {'Bill': [p.name for p in players if ((p.name != 'Bill') and (p.name != 'Pluribus'))]}
+select_players = ['Bill']
+select_player_comps = {'Bill': [p.name for p in players if ((p.name != 'Bill') and (p.name != 'Pluribus'))]}
 
 # --- configure data and run estimation
 def config_data(select_player, select_player_comps, players_f, select_type_loss_data, select_slansky_ranks_f, select_stack_ranks_f):
@@ -491,7 +493,7 @@ print(df_num_obs)
 for j in range(1, 8):
     print(j, get_play_perc(filter_choice_situations(choice_situations, [i for i in range(3, 10)], [j])))
 
-t_slansky = [[1, 2, 9]]
+t_slansky = [[1, 2, 3, 4, 5, 6, 7, 8, 9]]
 t_stacks = [[1, 2, 3, 4, 5, 6, 7]]
 t_plot_pos = 0
 for t_slansky_select in t_slansky:
@@ -547,7 +549,7 @@ for t_slansky_select in t_slansky:
             for ax in axs2.flat:
                 ax.set(xlabel='exp utility fold', ylabel='exp utility play')
 
-estimate_model({'all': t}, select_type_loss_data, constrain_beta_TF)
+estimate_model({'all': t}, select_type_loss_data, True) # constrain_beta_TF
 
 # ---------------------------- END DELETE SECTION --------------------------------
 
