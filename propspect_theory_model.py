@@ -1,5 +1,3 @@
-# examine effect on player by stack size (create loop)
-
 # ------ Fit prospect theory model -----
 import random
 import numpy as np
@@ -31,12 +29,13 @@ class Option:
 
 
 class ChoiceSituation:
-    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, post_loss=None):
+    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, seat=None, post_loss=None):
         self.options = sit_options
         self.option_names = [x.name for x in sit_options]
         self.choice = sit_choice
         self.slansky_strength = slansky_strength
         self.stack_rank = stack_rank
+        self.seat = seat
         self.post_loss = post_loss
         self.values = None
         self.prob_options = None
@@ -305,6 +304,7 @@ def generate_choice_situations(player_f, game_hand_index_f, df_f=None):
                                                  sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop'] == 'f' else "play",
                                                  slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
                                                  stack_rank=player_f.stack_ranks[game_num][hand_num],
+                                                 seat=player_f.seat_numbers[game_num][hand_num],
                                                  post_loss=t_post_loss_bool)
 
             choice_situations_f.append(t_choice_situation)
@@ -314,7 +314,7 @@ def generate_choice_situations(player_f, game_hand_index_f, df_f=None):
     return choice_situations_f
 
 
-def filter_choice_situations(choice_situations_f, select_slansky_ranks_f=None, select_stack_ranks_f=None, select_type_loss_data_f=None):
+def filter_choice_situations(choice_situations_f, select_slansky_ranks_f=None, select_stack_ranks_f=None, select_seats_f=None, select_type_loss_data_f=None):
     ind_to_keep = list()
 
     for t_ind_cs in range(0, len(choice_situations_f)):
@@ -328,6 +328,11 @@ def filter_choice_situations(choice_situations_f, select_slansky_ranks_f=None, s
         # keep only select stack ranks
         if select_stack_ranks_f is not None:
             if choice_situations_f[t_ind_cs].stack_rank not in select_stack_ranks_f:
+                t_keep_bool = False
+
+        # keep only select seats
+        if select_seats_f is not None:
+            if choice_situations_f[t_ind_cs].seat not in select_seats_f:
                 t_keep_bool = False
 
         # keep only select hands based on following loss or not
@@ -362,6 +367,7 @@ success_event_name = 'fold'
 fail_event_name = 'play'
 select_stack_ranks = [1, 2, 3, 4, 5, 6, 7] # works for [3, 4]; [1, 2] and [5, 6] and [1, 2, 3, 4, 5, 6]  does not have interior solution for gamma
 select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9] # works for [1, 2, 8, 9]
+select_seats = [1, 2, 3, 4, 5, 6]
 select_type_loss_data = ['all']     # 'post_loss', 'not_post_loss',
 constrain_beta_TF = False
 
@@ -386,11 +392,11 @@ df = data['df']
 # select_players = [p.name for p in players]   #### naive, should be selected by hand
 # select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section
 
-# select_players = ['Pluribus']
-# select_player_comps = {'Pluribus': 'Pluribus'}
-
 select_players = ['Bill']
-select_player_comps = {'Bill': [p.name for p in players if ((p.name != 'Bill') and (p.name != 'Pluribus'))]}
+select_player_comps = {'Bill': 'Bill'}
+
+# select_players = ['Pluribus']
+# select_player_comps = {'Pluribus': [p.name for p in players if ((p.name != 'Pluribus') and (p.name != 'Pluribus'))]}
 
 # --- configure data and run estimation
 def config_data(select_player, select_player_comps, players_f, select_type_loss_data, select_slansky_ranks_f, select_stack_ranks_f):
@@ -426,11 +432,11 @@ def estimate_model(choice_situations_dict, select_type_loss_data, constrain_beta
     pgtol = 1e-6
     ftol = 1e-8
     if constrain_beta_TF:
-        start_params = [0.5, 1.75, 0.6, 0.6, 0.2]  ### removed 0.5 as beta starting point
-        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 3), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]  ### removed (1e-2, 1 - 1e-2), as beta bounds
+        start_params = [0.5, 1.75, 0.6, 0.6, 0.2]  ### removed 0.5 as beta starting point, overrides, should delete and pass as args
+        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 20), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]  ### overrides, outside params should delte and pass correctly removed (1e-2, 1 - 1e-2), as beta bounds
     else:
         start_params = [0.5, 1.75, 0.5, 0.6, 0.6, 0.2]
-        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 3), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]
+        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 20), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]
 
     # --- Fit model
     model_results = dict()
@@ -471,85 +477,111 @@ for t_select_player in select_players:
     # t_estimation_output, t_model = estimate_model(t_choice_situations_dict, select_type_loss_data, constrain_beta_TF)    # choice_situations, choice_situations_post_loss, choice_situations_not_post_loss
     # player_model_results.update({t_select_player: t_estimation_output})
     # player_models.update({t_select_player: t_model})
-    #
-    # del t_estimation_output, t_model, t_choice_situations_dict
+
+    del t_estimation_output, t_model, t_choice_situations_dict
 
 
 # ------ Examine player descriptive stats; comment out or delete later -----------
-choice_situations = player_choice_situations['Pluribus']['all']
-df_play_perc = pd.DataFrame(index=select_slansky_ranks, columns=select_stack_ranks)
-df_num_obs = pd.DataFrame(index=select_slansky_ranks, columns=select_stack_ranks)
+choice_situations = player_choice_situations[select_players[0]]['all']
+df_play_perc = pd.DataFrame(index=select_slansky_ranks, columns=select_seats)
+df_num_obs = pd.DataFrame(index=select_slansky_ranks, columns=select_seats)
 for t_slansky_rank in select_slansky_ranks:
-    for t_stack_rank in select_stack_ranks:
+    for t_seat in select_seats:
         t_slansky_rank = ([t_slansky_rank] if (type(t_slansky_rank) is not list) else t_slansky_rank)
-        t_stack_rank = ([t_stack_rank] if (type(t_stack_rank) is not list) else t_stack_rank)
-        t_perc, t_num = get_play_perc(filter_choice_situations(choice_situations, t_slansky_rank, t_stack_rank))
-        df_play_perc.loc[t_slansky_rank, t_stack_rank] = round(t_perc*1e2, 1)
-        df_num_obs.loc[t_slansky_rank, t_stack_rank] = t_num
+        # t_stack_rank = ([t_stack_rank] if (type(t_stack_rank) is not list) else t_stack_rank) ####
+        t_seat = ([t_seat] if (type(t_seat) is not list) else t_seat)
+        t_perc, t_num = get_play_perc(filter_choice_situations(choice_situations, select_slansky_ranks_f=t_slansky_rank, select_seats_f=t_seat))
+        df_play_perc.loc[t_slansky_rank, t_seat] = round(t_perc*1e2, 1)
+        df_num_obs.loc[t_slansky_rank, t_seat] = t_num
 print(df_play_perc)
 print(df_num_obs)
 
 # Print marginal percentages
-for j in range(1, 8):
-    print(j, get_play_perc(filter_choice_situations(choice_situations, [i for i in range(3, 10)], [j])))
+print('Percent of hands played by seat number:')
+for j in range(1, 7):
+    print(j, get_play_perc(filter_choice_situations(choice_situations, select_slansky_ranks_f=[i for i in range(1, 10)], select_seats_f=[j])))
 
-t_slansky = [[1, 2, 3, 4, 5, 6, 7, 8, 9]]
-t_stacks = [[1, 2, 3, 4, 5, 6, 7]]
-t_plot_pos = 0
-for t_slansky_select in t_slansky:
-    fig1, axs1 = plt.subplots(2, math.ceil(len(t_stacks)/2))
-    fig1.suptitle('Slansky rank: ' + str(t_slansky_select))
 
-    fig2, axs2 = plt.subplots(2, math.ceil(len(t_stacks) / 2))
-    fig2.suptitle('Slansky rank: ' + str(t_slansky_select))
-    for t_stacks_select in t_stacks:
-        t_slansky_select = t_slansky_select if isinstance(t_slansky_select, list) else [t_slansky_select]
-        t_stacks_select = t_stacks_select if isinstance(t_stacks_select, list) else [t_stacks_select]
+def make_plots(t_slansky, t_seats, n_rows):
+    # t_slansky = [[1, 2, 3, 4, 5, 6, 7, 8, 9], [3, 4, 5, 6, 7], [1, 2, 8, 9]]  # [[1, 2, 3, 4, 5, 6, 7, 8, 9], [3, 4, 5, 6, 7, 8, 9]]
+    # t_seats = [[1, 2, 3, 4, 5, 6]]
+    # n_rows = 2
+    n_cols = math.ceil(len(t_seats) / n_rows)
+    t_filtered_data_sets = list()
+    t_color_dict_seat = {1: 'b', 2: 'g', 3: 'r', 4: 'c', 5: 'm', 6: 'y'}
+    t_color_dict_slansky = {1: 'tab:blue', 2: 'tab:orange', 3: 'tab:green', 4: 'tab:red', 5: 'tab:purple',
+                            6: 'tab:brown', 7: 'tab:pink', 8: 'tab:gray', 9: 'tab:olive'}
 
-        t = filter_choice_situations(player_choice_situations['Pluribus']['all'], select_slansky_ranks_f=t_slansky_select,
-                                     select_stack_ranks_f=t_stacks_select, select_type_loss_data_f='all')
-        get_play_perc(t)
+    for t_slansky_select in t_slansky:
+        t_plot_pos = -1
+        fig1, axs1 = plt.subplots(n_rows, n_cols)
+        fig1.suptitle('Slansky rank: ' + str(t_slansky_select))
 
-        # get histogram of expected utilities
-        exp_utility_play = list()
-        exp_utility_fold = list()
-        exp_utility_fold_net = list()
-        t_choices = list()
-        stack_rank_colors = list()
-        t_color_dict_stack = {1: 'b', 2: 'g', 3: 'r', 4: 'c', 5: 'm', 6: 'y', 7: 'k'}
-        t_color_dict_slansky = {1: 'tab:blue', 2: 'tab:orange', 3: 'tab:green', 4: 'tab:red', 5: 'tab:purple',
-                                6: 'tab:brown', 7: 'tab:pink', 8: 'tab:gray', 9: 'tab:olive'}
-        for cs in t:
-            exp_utility_play.append(cs.options[cs.option_names.index('play')].calc_exp_utility())
-            exp_utility_fold.append(cs.options[cs.option_names.index('fold')].calc_exp_utility())
-            exp_utility_fold_net.append(cs.options[cs.option_names.index('fold')].calc_exp_utility() -
-                                        cs.options[cs.option_names.index('play')].calc_exp_utility())
-            t_choices.append(int(cs.choice == 'fold'))
-            stack_rank_colors.append(t_color_dict_slansky[cs.stack_rank])
-        # plt.plot(exp_utility_play, exp_utility_fold, 'x')
-        t_plot_pos += 1
-        try:
-            axs1[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2)), math.floor(t_plot_pos / 2)].scatter(exp_utility_fold_net, t_choices, c=stack_rank_colors)
-            axs1[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2)), math.floor(t_plot_pos / 2)].set_title('stack rank: ' + str(t_stacks_select) + ', obs: ' + str(len(t)))
+        fig2, axs2 = plt.subplots(n_rows, n_cols)
+        fig2.suptitle('Slansky rank: ' + str(t_slansky_select))
+        t_filtered_data_sets_seat = list()
+        for t_seats_select in t_seats:
+            t_slansky_select = t_slansky_select if isinstance(t_slansky_select, list) else [t_slansky_select]
+            t_seats_select = t_seats_select if isinstance(t_seats_select, list) else [t_seats_select]
+
+            t = filter_choice_situations(player_choice_situations[select_players[0]]['all'],
+                                         select_slansky_ranks_f=t_slansky_select,
+                                         select_seats_f=t_seats_select, select_type_loss_data_f='all')
+            t_filtered_data_sets_seat.append(t)
+            print('Number of hands played: %3.1f%%' % (get_play_perc(t)[0] * 100))
+
+            # get histogram of expected utilities
+            exp_utility_play = list()
+            exp_utility_fold = list()
+            exp_utility_fold_net = list()
+            exp_utility_prob = list()
+            t_choices = list()
+            slansky_rank_colors = list()
+            fold_TF_colors = list()
+            for cs in t:
+                t_util_play = cs.options[cs.option_names.index('play')].calc_exp_utility()
+                t_util_fold = cs.options[cs.option_names.index('fold')].calc_exp_utility()
+                exp_utility_play.append(t_util_play)
+                exp_utility_fold.append(t_util_fold)
+                exp_utility_fold_net.append(t_util_fold - t_util_play)
+                exp_utility_prob.append(1/(1 + (1 * math.exp(t_util_play + t_util_fold))))
+                t_choices.append(int(cs.choice == 'fold'))
+                slansky_rank_colors.append(t_color_dict_slansky[cs.slansky_strength])
+                fold_TF_colors.append('r' if cs.choice == 'fold' else 'tab:gray')
+                del t_util_fold, t_util_play
+
+            t_plot_pos += 1
+            t_plot_pos_x = int(t_plot_pos / n_cols)
+            t_plot_pos_y = t_plot_pos % n_cols
+
+            if n_cols == 1:
+                axs1[t_plot_pos].scatter(exp_utility_fold_net, t_choices, c=slansky_rank_colors)
+                axs1[t_plot_pos].set_title('seat: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+
+                # axs2[t_plot_pos].scatter(exp_utility_fold, exp_utility_play, c=fold_TF_colors)
+                # axs2[t_plot_pos].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+                axs2[t_plot_pos].scatter(exp_utility_prob, t_choices, c=slansky_rank_colors)
+                axs2[t_plot_pos].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+            else:
+                axs1[t_plot_pos_x, t_plot_pos_y].scatter(exp_utility_fold_net, t_choices, c=slansky_rank_colors)
+                axs1[t_plot_pos_x, t_plot_pos_y].set_title('seat: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+
+                # axs2[t_plot_pos_x, t_plot_pos_y].scatter(exp_utility_fold, exp_utility_play, c=fold_TF_colors)
+                # axs2[t_plot_pos_x, t_plot_pos_y].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+                axs2[t_plot_pos_x, t_plot_pos_y].scatter(exp_utility_prob, t_choices, c=slansky_rank_colors)
+                axs2[t_plot_pos_x, t_plot_pos_y].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+
             for ax in axs1.flat:
                 ax.set(ylabel='Fold T/F')
-
-            axs2[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2)), math.floor(t_plot_pos / 2)].scatter(exp_utility_fold, exp_utility_play, c=stack_rank_colors)
-            axs2[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2)), math.floor(t_plot_pos / 2)].set_title('stack rank: ' + str(t_stacks_select) + ', obs: ' + str(len(t)))
-            for ax in axs2.flat:
-                ax.set(xlabel='exp utility fold', ylabel='exp utility play')
-        except IndexError:
-            axs1[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2))].scatter(exp_utility_fold_net, t_choices, c=stack_rank_colors)
-            axs1[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2))].set_title('stack rank: ' + str(t_stacks_select) + ', obs: ' + str(len(t)))
-            for ax in axs1.flat:
-                ax.set(ylabel='Fold T/F')
-
-            axs2[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2))].scatter(exp_utility_fold, exp_utility_play, c=stack_rank_colors)
-            axs2[math.ceil(t_plot_pos / 2 - int(t_plot_pos / 2))].set_title('stack rank: ' + str(t_stacks_select) + ', obs: ' + str(len(t)))
             for ax in axs2.flat:
                 ax.set(xlabel='exp utility fold', ylabel='exp utility play')
 
-estimate_model({'all': t}, select_type_loss_data, True) # constrain_beta_TF
+        t_filtered_data_sets.append(t_filtered_data_sets_seat)
+
+    return t_filtered_data_sets
+
+t_filtered_data_sets = make_plots(t_slansky=[[1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 8, 9]], t_seats=[[1, 2, 3, 4, 5, 6], [3, 4, 5, 6], [3, 4, 5, 6], [2, 3]], n_rows=2)
+estimate_model({'all': t_filtered_data_sets[0][1]}, select_type_loss_data, constrain_beta_TF=False) # constrain_beta_TF
 
 # ---------------------------- END DELETE SECTION --------------------------------
 
