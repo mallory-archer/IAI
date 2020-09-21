@@ -39,17 +39,21 @@ def prob_winning_transform(args_list_f, exp_loss_f):
 
 # --------------------- INFER WIN PROBABILITIES AND PAYOFFS FROM DATA SET ---------------------------
 # ---- Run summary functions on actual data to approximate win / loss probabilities and payoffs; output of acf function has other options for levels of aggregation
-# _, _, _, _, prob_rank_seat_dict, payoff_rank_seat_dict, _, _ = acf.calc_prob_winning_slansky_rank(games)
-# with open('slansky_prob_by_seat.json', 'w') as f:
-#     json.dump(prob_rank_seat_dict, f)
-# with open('slansky_payoff_by_seat.json', 'w') as f:
-#     json.dump(payoff_rank_seat_dict, f)
+# _, _, prob_dict, payoff_dict = acf.calc_prob_winning_slansky_rank(games,
+#                                                             slansky_groups_f=[['1', '2', '3'], ['4', '5', '6', '7'], ['8', '9']],
+#                                                             seat_groups_f=None,
+#                                                             stack_groups_f=None
+#                                                             )
+# with open('prob_slansky_123_4567_89_seat_stack.json', 'w') as f:
+#     json.dump(prob_dict, f)
+# with open('payoff_slansky_123_4567_89_seat_stack.json', 'w') as f:
+#     json.dump(payoff_dict, f)
 
 # ---- Load previously calculated saved probabilities and payoffs ---
-with open('slansky_prob_by_seat.json', 'r') as f:
-    prob_rank_seat_dict = json.load(f)
-with open('slansky_payoff_by_seat.json', 'r') as f:
-    payoff_rank_seat_dict = json.load(f)
+with open('prob_slansky_123_4567_89_seat_stack.json', 'r') as f:
+    prob_dict = json.load(f)
+with open('payoff_slansky_123_4567_89_seat_stack.json', 'r') as f:
+    payoff_dict = json.load(f)
 
 
 # ====================== Archive ======================
