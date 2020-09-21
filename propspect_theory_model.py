@@ -1,10 +1,10 @@
 # ------ Fit prospect theory model -----
 import random
 import numpy as np
-# import pandas as pd
+import pandas as pd
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
-from assumption_calc_functions import *
+from assumption_calc_functions import create_game_hand_index
 # from params import exp_loss_seat_dict, exp_win_seat_dict
 from params import prob_dict, payoff_dict
 from sklearn.metrics import confusion_matrix
@@ -84,6 +84,12 @@ class ProspectModel(GenericLikelihoodModel):
         self.gamma_f = None
         self.delta_f = None
         self.phi_f = None
+        self.param_names_f = ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi']
+
+        if self.provided_phi is not None:
+            self.param_names_f.pop(self.param_names_f.index('phi'))
+        if self.constrain_beta:
+            self.param_names_f.pop(self.param_names_f.index('beta'))
 
     # refresh choice sitaution values under updated model parameters
     def refresh_choice_situation_values(self):
@@ -96,18 +102,22 @@ class ProspectModel(GenericLikelihoodModel):
     # replaces default loglikelihood for each observation
     def loglikeobs(self, params):
         # print(self.choice_probs)
-        self.alpha_f = params[0]
-        self.lambda_f = params[1]
-        if self.constrain_beta:
-            self.beta_f = self.alpha_f  # self.alpha_f #### set equal to self.alpha_f rather than params[2]
-            self.gamma_f = params[2]    #### decrease index by 1
-            self.delta_f = params[3]    #### decrease index by 1
-            self.phi_f = params[4]      #### decrease index by 1
+        self.alpha_f = params[self.param_names_f.index('alpha')]
+        self.lambda_f = params[self.param_names_f.index('lambda')]
+        self.gamma_f = params[self.param_names_f.index('gamma')]
+        self.delta_f = params[self.param_names_f.index('delta')]
+
+        # constrained phi
+        if self.provided_phi is not None:
+            self.phi_f = self.provided_phi
         else:
-            self.beta_f = params[2]
-            self.gamma_f = params[3]
-            self.delta_f = params[4]
-            self.phi_f = params[5]
+            self.phi_f = params[self.param_names_f.index('phi')]
+
+        # constrained beta
+        if self.constrain_beta:
+            self.beta_f = self.alpha_f
+        else:
+            self.beta_f = params[self.param_names_f.index('beta')]
 
         # -- for given evaluation of likelihood at current value of params, calculate choice information
         self.refresh_choice_situation_values()
@@ -119,7 +129,7 @@ class ProspectModel(GenericLikelihoodModel):
 
     # replaces default gradient loglikelihood for each observation (Jacobian)
     def score_obs(self, params, **kwds):
-        def calc_grad(options_ff, j_chosen_ff, prob_choice_ff, alpha_ff, lambda_ff, beta_ff, gamma_ff, delta_ff, phi_ff):
+        def calc_grad(options_ff, j_chosen_ff, prob_choice_ff, grad_params_ff, alpha_ff, lambda_ff, beta_ff, gamma_ff, delta_ff, phi_ff):
             # d(LL)/d(x) = sum[(1/Pr) * d(Pr)/d(x)]
             # d(Pr)/d(x=alpha, beta, lambda) = d(Pr)/d(V) * d(V)/d(v) * d(v)/d(x=alpha, beta, lambda)
             # d(Pr)/d(x=c=gamma, delta)      = d(Pr)/d(V) * d(V)/d(pi) * d(pi)/d(x=c=gamma, delta)
@@ -207,12 +217,13 @@ class ProspectModel(GenericLikelihoodModel):
                     g_prime_f = np.dot(t_exp_option_vals, t_option_vals)
                     return (f_prime_f * g_f - g_prime_f * f_f) / (g_f ** 2)
 
-            if self.constrain_beta:
-                grad_params_f = ['alpha', 'lambda', 'gamma', 'delta', 'phi']   #### remove 'beta' between 'lambda' and 'gamma'
-            else:
-                grad_params_f = ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi']
+            # if self.constrain_beta:
+            #     grad_params_f = ['alpha', 'lambda', 'gamma', 'delta', 'phi']
+            # else:
+            #     grad_params_f = ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi']
+
             grad_values_f = list()
-            for t_select_param in grad_params_f:
+            for t_select_param in grad_params_ff:   ### added self. before grad_params_f
                 grad_values_f.append(
                     (1 / prob_choice_ff) *
                     calc_d_Pr_d_x(options_fff=options_ff, j_chosen_fff=j_chosen_ff, d_param_fff=t_select_param,
@@ -220,7 +231,7 @@ class ProspectModel(GenericLikelihoodModel):
                                   gamma_fff=gamma_ff, delta_fff=delta_ff, phi_fff=phi_ff)
                 )
 
-            return dict(zip(grad_params_f, grad_values_f))
+            return dict(zip(grad_params_ff, grad_values_f))
 
         # ensure that the values stores for options, probs, choice_probs are update for current value of likelihood
         self.loglikeobs(params)  # may be able to remove this to halve the amount of execution time
@@ -229,10 +240,12 @@ class ProspectModel(GenericLikelihoodModel):
         for cs_f in self.choice_situations_f:
             t_grad = calc_grad(options_ff=cs_f.options, j_chosen_ff=cs_f.get_choice_location(cs_f.choice),
                                prob_choice_ff=cs_f.prob_choice,
+                               grad_params_ff=self.param_names_f,
                                alpha_ff=self.alpha_f, lambda_ff=self.lambda_f, beta_ff=self.beta_f,
                                gamma_ff=self.gamma_f, delta_ff=self.delta_f,
                                phi_ff=self.phi_f)
-            jacob_f.append([t_grad[t_key] for t_key in ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi'] if t_key in list(t_grad.keys())])  # robust to dropping parameters (constraining)
+            # jacob_f.append([t_grad[t_key] for t_key in ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi'] if t_key in list(t_grad.keys())])  # robust to dropping parameters (constraining)
+            jacob_f.append([v for _, v in t_grad.items()])  # robust to dropping parameters (constraining)
         return np.array(jacob_f)
 
 
@@ -382,14 +395,15 @@ success_event_name = 'fold'
 fail_event_name = 'play'
 select_stack_ranks = [1, 2, 3, 4, 5, 6] # works for [3, 4]; [1, 2] and [5, 6] and [1, 2, 3, 4, 5, 6]  does not have interior solution for gamma
 select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9] # works for [1, 2, 8, 9]
-select_seats = [3, 4, 5, 6]
+select_seats = [1, 2, 3, 4, 5, 6]
 select_type_loss_data = ['all']     # 'post_loss', 'not_post_loss',
-constrain_beta_TF = False
+constrain_beta_TF = False   # setting to True makes the value of beta equal to the value of alpha
+provided_phi = None # setting to a numerical value will fix phi and remove from model fitting procedure
 
 # ------------- GENERATE SYNTHETIC DATA ----------------------
-# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, 0.4]
+# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, .5]
 # params_actual = dict(zip(param_names_actual, param_values_actual))
-# n_hands = 8000
+# n_hands = 3000
 # choice_situations = generate_synthetic_data(n_hands, params_actual)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
 #
 # select_players = ['Pluribus'] # Not used, only for matching structure of real data loops
@@ -440,18 +454,27 @@ def config_data(select_player, select_player_comps, players_f, select_type_loss_
     return choice_situations_dict
 
 
-def estimate_model(choice_situations_dict, select_type_loss_data, constrain_beta_TF):
+def estimate_model(choice_situations_dict, select_type_loss_data, constrain_beta_TF, provided_phi):
     # ------------ FIT MODEL -------------------
     # Optimization parameters
     maxiter = 100
     pgtol = 1e-6
     ftol = 1e-8
+
+    # configure starting values and bounds
+    start_params_all = {'alpha': 0.5, 'lambda': 1.75, 'beta': 0.5, 'gamma': 0.6, 'delta':0.6, 'phi': 0.2}
+    bounds_params_all = {'alpha': (1e-2, 1 - 1e-2), 'lambda': (1e-2, 20), 'beta': (1e-2, 1 - 1e-2), 'gamma': (1e-2, 1 - 1e-2), 'delta': (1e-2, 1 - 1e-2), 'phi': (1e-2, 1 - 1e-2)}
+
+    start_params_names = list(start_params_all.keys())
+    bounds_params_names = list(bounds_params_all.keys())
     if constrain_beta_TF:
-        start_params = [0.5, 1.75, 0.6, 0.6, 0.2]  ### removed 0.5 as beta starting point, overrides, should delete and pass as args
-        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 20), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]  ### overrides, outside params should delte and pass correctly removed (1e-2, 1 - 1e-2), as beta bounds
-    else:
-        start_params = [0.5, 1.75, 0.5, 0.6, 0.6, 0.2]
-        bounds_params = [(1e-2, 1 - 1e-2), (1e-2, 20), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2), (1e-2, 1 - 1e-2)]
+        start_params_names.pop(start_params_names.index('beta'))
+        bounds_params_names.pop(bounds_params_names.index('beta'))
+    if provided_phi is not None:
+        start_params_names.pop(start_params_names.index('phi'))
+        bounds_params_names.pop(bounds_params_names.index('phi'))
+    start_params = [start_params_all[k] for k in start_params_names]
+    bounds_params = [bounds_params_all[k] for k in bounds_params_names]
 
     # --- Fit model
     model_results = dict()
@@ -460,7 +483,8 @@ def estimate_model(choice_situations_dict, select_type_loss_data, constrain_beta
         print('\n\n\n\nEstimating %s model' % type_loss_data)
         model = ProspectModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_dict[type_loss_data]]),
                               choice_situations_f=choice_situations_dict[type_loss_data],
-                              constrain_beta=constrain_beta_TF)  # add arg: phi_f=phi to take out phi in deriv
+                              constrain_beta=constrain_beta_TF,
+                              provided_phi=provided_phi)
 
         model_result = model.fit(start_params=start_params, method='LBFGS', maxiter=maxiter, disp=True,
                                  bounds=bounds_params, pgtol=pgtol, factr=ftol)
@@ -489,7 +513,7 @@ for t_select_player in select_players:
         player_choice_situations.update({t_select_player: t_choice_situations_dict})
 
     # estimate model
-    t_estimation_output, t_model = estimate_model(t_choice_situations_dict, select_type_loss_data, constrain_beta_TF)    # choice_situations, choice_situations_post_loss, choice_situations_not_post_loss
+    t_estimation_output, t_model = estimate_model(t_choice_situations_dict, select_type_loss_data, constrain_beta_TF=constrain_beta_TF, provided_phi=provided_phi)    # choice_situations, choice_situations_post_loss, choice_situations_not_post_loss
     player_model_results.update({t_select_player: t_estimation_output})
     player_models.update({t_select_player: t_model})
 
@@ -596,8 +620,8 @@ def make_plots(t_slansky, t_seats, t_stacks, n_rows):
 
     return t_filtered_data_sets
 
-t_filtered_data_sets = make_plots(t_slansky=[[1, 2, 3, 4, 5, 6, 7, 8, 9]], t_seats=[[3, 4, 5, 6]], t_stacks=[1, 2, 3, 4, 5, 6], n_rows=2)
-estimate_model({'all': t_filtered_data_sets[0][0]}, select_type_loss_data, constrain_beta_TF=True) # constrain_beta_TF
+t_filtered_data_sets = make_plots(t_slansky=[[1, 2, 3, 4, 8, 9]], t_seats=[[3, 4, 5, 6]], t_stacks=[1, 2, 3, 4, 5, 6], n_rows=2)
+estimate_model({'all': t_filtered_data_sets[0][0]}, select_type_loss_data, constrain_beta_TF=True, provided_phi=None) # constrain_beta_TF
 
 # ---------------------------- END DELETE SECTION --------------------------------
 

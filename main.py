@@ -353,5 +353,6 @@ print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome
 print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
 
 # import pickle
+# import pickle
 # with open("python_hand_data.pickle", 'wb') as f:
 #     pickle.dump({'players': players, 'games': games, 'df': df}, f)
