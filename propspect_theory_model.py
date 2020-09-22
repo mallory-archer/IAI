@@ -6,7 +6,8 @@ from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
 from assumption_calc_functions import create_game_hand_index
 # from params import exp_loss_seat_dict, exp_win_seat_dict
-from params import prob_dict, payoff_dict
+# from params import prob_dict, payoff_dict
+import params
 from sklearn.metrics import confusion_matrix
 import pickle
 import matplotlib.pyplot as plt
@@ -400,10 +401,25 @@ select_type_loss_data = ['all']     # 'post_loss', 'not_post_loss',
 constrain_beta_TF = False   # setting to True makes the value of beta equal to the value of alpha
 provided_phi = None # setting to a numerical value will fix phi and remove from model fitting procedure
 
+# Determines at which level probabilities are aggregated (can group slansky ranks 1, 2, 3 into "tier 1" and seats 1 and 2 into "blind seats", e.g.)
+# Strucutre is list of lists of grouped items. If None, then each item aka slansky rank 1, slansky rank 2, etc. is treated as it's own group (not aggregated), numbers as ints not chars
+slansky_groups = [[1, 2, 3], [4, 5, 6, 7, 8, 9]]
+seat_groups = None
+stack_groups = None
+write_prob_payoff_dicts = False
+
+# ------------- CALCULATIONS --------------------------------------
+# import probability and payoff dictionaries
+try:
+    prob_dict, payoff_dict = params.load_prob_payoff_dict(slansky_groups, seat_groups, stack_groups)
+except FileNotFoundError:
+    _, _, prob_dict, payoff_dict = params.create_prob_payoff_dict(games, slansky_groups, seat_groups, stack_groups, write_to_file_TF_f=write_prob_payoff_dicts)
+
+
 # ------------- GENERATE SYNTHETIC DATA ----------------------
-# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, .5]
+# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, .4]
 # params_actual = dict(zip(param_names_actual, param_values_actual))
-# n_hands = 3000
+# n_hands = 5000
 # choice_situations = generate_synthetic_data(n_hands, params_actual)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
 #
 # select_players = ['Pluribus'] # Not used, only for matching structure of real data loops
@@ -620,7 +636,7 @@ def make_plots(t_slansky, t_seats, t_stacks, n_rows):
 
     return t_filtered_data_sets
 
-t_filtered_data_sets = make_plots(t_slansky=[[1, 2, 3, 4, 8, 9]], t_seats=[[3, 4, 5, 6]], t_stacks=[1, 2, 3, 4, 5, 6], n_rows=2)
+t_filtered_data_sets = make_plots(t_slansky=[[3, 4, 8, 9]], t_seats=[[3, 4, 5, 6]], t_stacks=[1, 2, 3, 4, 5, 6], n_rows=2)
 estimate_model({'all': t_filtered_data_sets[0][0]}, select_type_loss_data, constrain_beta_TF=True, provided_phi=None) # constrain_beta_TF
 
 # ---------------------------- END DELETE SECTION --------------------------------
