@@ -383,7 +383,7 @@ def generate_synthetic_data(n_hands, params_actual):
     return choice_situations
 
 
-def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_dict_f, df_f=None):
+def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_dict_f):
     choice_situations_f = list()
     num_choice_situations_dropped = 0
 
@@ -424,11 +424,16 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
                                                                   'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
                                     Option(name='fold', outcomes={'lose': {'payoff': tfold_lose_payoff, 'prob': 1 - tfold_win_prob}})]  # 'win': {'payoff': draw_payoff(), 'prob': tfold_win_prob}
 
-                if df_f is not None:
-                    t_post_loss_bool = df_f.loc[(df_f.player == player_f.name) &
-                                              (df_f.game == float(game_num)) &
-                                              (df_f.hand == float(hand_num)), 'prev_outcome_loss'].bool()
-                else:
+                # if df_f is not None:
+                #     t_post_loss_bool = df_f.loc[(df_f.player == player_f.name) &
+                #                               (df_f.game == float(game_num)) &
+                #                               (df_f.hand == float(hand_num)), 'prev_outcome_loss'].bool()
+                # else:
+                #     t_post_loss_bool = None
+
+                try:
+                    t_post_loss_bool = (player_f.outcomes[game_num][str(int(hand_num)-1)] < 0)
+                except KeyError:
                     t_post_loss_bool = None
 
                 t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:],
@@ -489,7 +494,7 @@ def config_create(select_player, select_player_comps, players_f):
     choice_situations_f = list()
     for t_player in [i for i in range(0, len(players_f)) if players_f[i].name in select_player_comps[select_player]]:  # , 'Gogo', 'MrWhite', 'Hattori']]:
         game_hand_player_index = create_game_hand_index(players_f[t_player])  # 11 is Budd, strong coef from linear regression
-        t_choice_situations = generate_choice_situations(players_f[t_player], game_hand_player_index, prob_dict, payoff_dict, df)  # select_slansky_ranks_ff=select_slansky_ranks_f, select_stack_ranks_ff=select_stack_ranks_f)
+        t_choice_situations = generate_choice_situations(players_f[t_player], game_hand_player_index, prob_dict, payoff_dict)  # select_slansky_ranks_ff=select_slansky_ranks_f, select_stack_ranks_ff=select_stack_ranks_f)
         choice_situations_f = choice_situations_f + t_choice_situations
     del t_choice_situations
 
@@ -598,7 +603,7 @@ stack_groups = None
 write_prob_payoff_dicts = False
 
 model_formulation = 'prospect'  # 'utility'
-synthetic_data_TF = True
+synthetic_data_TF = False
 
 select_players = ['Pluribus']   # select_players = [p.name for p in players]   # select_players = ['Pluribus']
 select_player_comps = {'Bill': 'Bill', 'Pluribus': 'Pluribus'}  # select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section # select_player_comps = {'Pluribus': [p.name for p in players if ((p.name != 'Pluribus') and (p.name != 'Pluribus'))]}
@@ -615,7 +620,7 @@ if not synthetic_data_TF:
         data = pickle.load(f)
     players = data['players']
     games = data['games']
-    df = data['df']
+    # df = data['df']
 
 # ------------- CALCULATIONS --------------------------------------
 # overwrites select players when creating a synthetic data and names it Pluribus
