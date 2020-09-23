@@ -25,8 +25,11 @@ class Option:
             calc_outcome_pi(p_f=t_outcome['prob'], c_f=gamma_f if (t_outcome['payoff'] >= 0) else delta_f))
                     for _, t_outcome in self.outcomes.items()])
 
-    def calc_exp_utility(self):
-        return sum([calc_outcome_value(v_f=t_outcome['payoff'], pi_f=t_outcome['prob']) for _, t_outcome in self.outcomes.items()])
+    # def calc_option_utility(self):
+    #     return sum([calc_outcome_value(v_f=t_outcome['payoff'], pi_f=t_outcome['prob']) for _, t_outcome in self.outcomes.items()])
+
+    def calc_option_utility(self, lose_weight_f=1):
+        return sum([calc_outcome_value(v_f=t_outcome['payoff'], pi_f=t_outcome['prob']) * (lose_weight_f if t_name == 'lose' else 1) for t_name, t_outcome in self.outcomes.items()])
 
 
 class ChoiceSituation:
@@ -42,10 +45,14 @@ class ChoiceSituation:
         self.prob_options = None
         self.prob_choice = None
         self.pred_choice = None
+        self.util_values = None
+        self.util_prob_options = None
+        self.util_prob_choice = None
         if (self.choice is not None) and self.choice not in self.option_names:
             print("Warning: specified choice of '%s' is not an option in choice set: %s" % (
             self.choice, self.option_names))
 
+    # prospect model formulation
     def get_option_values(self, alpha_f, lambda_f, beta_f, gamma_f, delta_f):
         return [x.calc_option_value(alpha_f, lambda_f, beta_f, gamma_f, delta_f) for x in self.options]
 
@@ -74,6 +81,30 @@ class ChoiceSituation:
 
     def predict_choice(self):
         self.pred_choice = self.option_names[self.prob_options.index(max(self.prob_options))]
+
+    # traditional utility model formulation
+    def get_util_values(self, lose_weight_f):
+        return [x.calc_option_utility(lose_weight_f) for x in self.options]
+
+    def get_util_option_probs(self, phi_f):
+        if self.util_values is not None:
+            return calc_prob_options(self.util_values, phi_f)
+        else:
+            print("Error: no utility values stored for choice situation. Set via method 'get_option_values(args)' first")
+            return None
+
+    def get_util_prob_choice(self, choice_f):
+        if self.util_prob_options is not None:
+            return self.util_prob_options[self.get_choice_location(choice_f)]
+        else:
+            print(
+                "Error: no option probabilities stored for choice situation. Set via method 'get_option_probs(args)' first")
+            return None
+
+    def set_util_model_values(self, lose_weight_f, phi_f):
+        self.util_values = self.get_util_values(lose_weight_f)
+        self.util_prob_options = self.get_util_option_probs(phi_f)
+        self.util_prob_choice = self.get_util_prob_choice(self.choice)
 
 
 class ProspectModel(GenericLikelihoodModel):
@@ -250,6 +281,80 @@ class ProspectModel(GenericLikelihoodModel):
         return np.array(jacob_f)
 
 
+class UtilityModel(GenericLikelihoodModel):
+    def __init__(self, endog, **kwds):
+        super(UtilityModel, self).__init__(endog, **kwds)
+        self.lose_weight_f = None
+        self.phi_f = None
+        self.param_names_f = ['lose_weight', 'phi']
+
+        if self.provided_phi is not None:
+            self.param_names_f.pop(self.param_names_f.index('phi'))
+
+    def refresh_choice_situation_values(self):
+        for t_choice_sit in self.choice_situations_f:
+            t_choice_sit.set_util_model_values(lose_weight_f=self.lose_weight_f, phi_f=self.phi_f)
+
+    def loglikeobs(self, params):
+        self.lose_weight_f = params[self.param_names_f.index('lose_weight')]
+
+        # constrained phi
+        if self.provided_phi is not None:
+            self.phi_f = self.provided_phi
+        else:
+            self.phi_f = params[self.param_names_f.index('phi')]
+
+        # -- for given evaluation of likelihood at current value of params, calculate choice information
+        self.refresh_choice_situation_values()
+
+        # --- calc log-likelihood
+        LL_f = [np.log(x.util_prob_choice) for x in self.choice_situations_f]
+
+        return np.array(LL_f)
+
+    def score_obs(self, params, **kwds):
+        def calc_grad(options_ff, j_chosen_ff, prob_choice_ff, grad_params_ff, lose_weight_ff, phi_ff):
+            # d(LL)/d(x) = sum[(1/Pr) * d(Pr)/d(x)]
+            # d(Pr)/d(x=lose_weight) = d(Pr)/d(util) * d(util)/d(lose_weight)
+            def calc_d_Pr_d_x(options_fff, j_chosen_fff, d_param_fff, lose_weight_fff, phi_fff):
+                def d_util_d_weight(outcomes_ffff):
+                    return calc_outcome_value(v_f=outcomes_ffff['lose']['payoff'], pi_f=outcomes_ffff['lose']['prob'])
+
+                # calc components specific to parameter
+                t_d_util_d_weight_options = [d_util_d_weight(j_opt.outcomes) for j_opt in options_fff]
+                t_d_util_d_weight_options_diff = [t_d_util_d_weight_options[j] - t_d_util_d_weight_options[j_chosen_fff] for j in range(0, len(t_d_util_d_weight_options)) if j != j_chosen_fff]
+
+                # calc components common across derivatives
+                t_option_utils = [j_opt.calc_option_utility(lose_weight_fff) for j_opt in options_fff]    # not differencing utilities
+                t_option_utils_diff = [t_option_utils[j] - t_option_utils[j_chosen_fff] for j in range(0, len(t_option_utils)) if j != j_chosen_fff]
+                t_exp_option_utils_diff = [calc_exp_option_value(j_opt, phi_fff) for j_opt in t_option_utils_diff]
+
+                if d_param_fff == 'phi':
+                    return phi_fff * sum(t_exp_option_utils_diff)
+                else:
+                    return np.dot(t_d_util_d_weight_options_diff, t_exp_option_utils_diff)
+
+            grad_values_f = list()
+            for t_select_param in grad_params_ff:
+                grad_values_f.append(
+                    (1 / prob_choice_ff) *
+                    calc_d_Pr_d_x(options_fff=options_ff, j_chosen_fff=j_chosen_ff, d_param_fff=t_select_param,
+                                  lose_weight_fff=lose_weight_ff, phi_fff=phi_ff)
+                )
+
+            return dict(zip(grad_params_ff, grad_values_f))
+
+        # ensure that the values stores for options, probs, choice_probs are update for current value of likelihood
+        self.loglikeobs(params)  # may be able to remove this to halve the amount of execution time
+
+        jacob_f = list()
+        for cs_f in self.choice_situations_f:
+            t_grad = calc_grad(options_ff=cs_f.options, j_chosen_ff=cs_f.get_choice_location(cs_f.choice),
+                               prob_choice_ff=cs_f.prob_choice, grad_params_ff=self.param_names_f, lose_weight_ff=self.lose_weight_f, phi_ff=self.phi_f)
+            jacob_f.append([v for _, v in t_grad.items()])  # robust to dropping parameters (constraining)
+        return np.array(jacob_f)
+
+
 def generate_synthetic_data(n_hands, params_actual):
     choice_situations = list()
     for n in range(0, n_hands):
@@ -378,6 +483,91 @@ def filter_choice_situations(choice_situations_f, select_slansky_ranks_f=None, s
     return [copy.deepcopy(choice_situations_f[i]) for i in ind_to_keep]
 
 
+def config_create(select_player, select_player_comps, players_f):
+    # create player-specific game, hand index
+    print('\nCreating data sets for %s' % select_player)
+    choice_situations_f = list()
+    for t_player in [i for i in range(0, len(players_f)) if players_f[i].name in select_player_comps[select_player]]:  # , 'Gogo', 'MrWhite', 'Hattori']]:
+        game_hand_player_index = create_game_hand_index(players_f[t_player])  # 11 is Budd, strong coef from linear regression
+        t_choice_situations = generate_choice_situations(players_f[t_player], game_hand_player_index, prob_dict, payoff_dict, df)  # select_slansky_ranks_ff=select_slansky_ranks_f, select_stack_ranks_ff=select_stack_ranks_f)
+        choice_situations_f = choice_situations_f + t_choice_situations
+    del t_choice_situations
+
+    print("%d choice situations processed" % len(choice_situations_f))
+    return choice_situations_f
+
+
+def config_filter(choice_situations_f, select_type_loss_data, select_slansky_ranks_f, select_seats_f, select_stack_ranks_f):
+    # filter out slansky ranks, stack ranks, and data split for post loss vs. not
+    choice_situations_dict_f = dict()
+    for t_select_type_loss_data in select_type_loss_data:
+        choice_situations_dict_f.update({t_select_type_loss_data: filter_choice_situations(choice_situations_f,
+                                                                                         select_slansky_ranks_f=select_slansky_ranks_f,
+                                                                                         select_stack_ranks_f=select_stack_ranks_f,
+                                                                                         select_type_loss_data_f=t_select_type_loss_data)})
+        print("%d choice situations included for %s type of data" % (len(choice_situations_dict_f[t_select_type_loss_data]), t_select_type_loss_data))
+        # print("%3.3f choose play for %d total situations" % get_play_perc(choice_situations_dict[t_select_type_loss_data], select_slansky_ranks_f, select_stack_ranks_f))
+        print("%3.3f choose play for %d total situations" % get_play_perc(filter_choice_situations(choice_situations_dict_f[t_select_type_loss_data], select_slansky_ranks_f=select_slansky_ranks_f, select_seats_f=select_seats_f, select_stack_ranks_f=select_stack_ranks_f)))
+    return choice_situations_dict_f
+
+
+def estimate_model(choice_situations_f, constrain_beta_TF, provided_phi, model_formulation, params_actual=None):
+    # ------------ FIT MODEL -------------------
+    # Optimization parameters
+    maxiter = 100
+    pgtol = 1e-6
+    ftol = 1e-8
+
+    # configure starting values and bounds
+    if model_formulation == 'prospect':
+        start_params_all = {'alpha': 0.5, 'lambda': 1.75, 'beta': 0.5, 'gamma': 0.6, 'delta': 0.6, 'phi': 0.2}
+        bounds_params_all = {'alpha': (1e-2, 1 - 1e-2), 'lambda': (1e-2, 20), 'beta': (1e-2, 1 - 1e-2), 'gamma': (1e-2, 1 - 1e-2), 'delta': (1e-2, 1 - 1e-2), 'phi': (1e-2, 1 - 1e-2)}
+    elif model_formulation == 'utility':
+        start_params_all = {'lose_weight_f': .5, 'phi': 0.2}
+        bounds_params_all = {'lose_weight_f': (1e-2, 10), 'phi': (1e-2, 1 - 1e-2)}
+    else:
+        print("Invalid model formulation selection to function 'estimate_model'. Must be 'prospect' or 'utility'")
+        return None
+
+    start_params_names = list(start_params_all.keys())
+    bounds_params_names = list(bounds_params_all.keys())
+    if constrain_beta_TF:
+        try:
+            start_params_names.pop(start_params_names.index('beta'))
+            bounds_params_names.pop(bounds_params_names.index('beta'))
+        except ValueError:
+            print('Ignoring beta constraint. If utility model, beta parameter is not applicable.')
+    if provided_phi is not None:
+        start_params_names.pop(start_params_names.index('phi'))
+        bounds_params_names.pop(bounds_params_names.index('phi'))
+    start_params = [start_params_all[k] for k in start_params_names]
+    bounds_params = [bounds_params_all[k] for k in bounds_params_names]
+
+    # --- Fit model
+    model_results = dict()
+    models = dict()
+    # for type_loss_data in select_type_loss_data:
+    if model_formulation == 'prospect':
+        model = ProspectModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_f]),
+                              choice_situations_f=choice_situations_f,
+                              constrain_beta=constrain_beta_TF,
+                              provided_phi=provided_phi)
+    elif model_formulation == 'utility':
+        model = UtilityModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_f]),
+                             choice_situations_f=choice_situations_f,
+                             constrain_beta=constrain_beta_TF,
+                             provided_phi=provided_phi)
+
+    model_result = model.fit(start_params=start_params, method='LBFGS', maxiter=maxiter, disp=True,
+                             bounds=bounds_params, pgtol=pgtol, factr=ftol)
+    print(model_result.summary())
+    if params_actual is not None:
+        print('Actual parameters: %s' % params_actual)
+    print('Gradient at solution: %s' % dict(zip(param_names_actual, model.score(model_result.params))))
+
+    return model_result, model
+
+
 # for examining data characteristics
 def get_play_perc(choice_situations_f):     # , select_slansky_ranks_f, select_stack_ranks_f
     t_play_count = 0
@@ -394,149 +584,92 @@ def get_play_perc(choice_situations_f):     # , select_slansky_ranks_f, select_s
 param_names_actual = ['alpha', 'lambda', 'beta', 'gamma', 'delta', 'phi']
 success_event_name = 'fold'
 fail_event_name = 'play'
-select_stack_ranks = [1, 2, 3, 4, 5, 6] # works for [3, 4]; [1, 2] and [5, 6] and [1, 2, 3, 4, 5, 6]  does not have interior solution for gamma
-select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9] # works for [1, 2, 8, 9]
+select_stack_ranks = [1, 2, 3, 4, 5, 6]
+select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 select_seats = [1, 2, 3, 4, 5, 6]
-select_type_loss_data = ['all']     # 'post_loss', 'not_post_loss',
+select_type_loss_data = ['post_loss']     # 'all', 'post_loss', 'not_post_loss',
 constrain_beta_TF = False   # setting to True makes the value of beta equal to the value of alpha
-provided_phi = None # setting to a numerical value will fix phi and remove from model fitting procedure
+provided_phi = None     # setting to a numerical value will fix phi and remove from model fitting procedure
 
-# Determines at which level probabilities are aggregated (can group slansky ranks 1, 2, 3 into "tier 1" and seats 1 and 2 into "blind seats", e.g.)
-# Strucutre is list of lists of grouped items. If None, then each item aka slansky rank 1, slansky rank 2, etc. is treated as it's own group (not aggregated), numbers as ints not chars
-slansky_groups = [[1, 2, 3], [4, 5, 6, 7, 8, 9]]
+# Determines at which level probabilities are aggregated (can group slansky ranks 1, 2, 3 into "tier 1" and seats 1 and 2 into "blind seats", e.g.). Strucutre is list of lists of grouped items. If None, then each item aka slansky rank 1, slansky rank 2, etc. is treated as it's own group (not aggregated), numbers as ints not chars
+slansky_groups = None
 seat_groups = None
 stack_groups = None
 write_prob_payoff_dicts = False
 
+model_formulation = 'prospect'  # 'utility'
+synthetic_data_TF = True
+
+select_players = ['Pluribus']   # select_players = [p.name for p in players]   # select_players = ['Pluribus']
+select_player_comps = {'Bill': 'Bill', 'Pluribus': 'Pluribus'}  # select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section # select_player_comps = {'Pluribus': [p.name for p in players if ((p.name != 'Pluribus') and (p.name != 'Pluribus'))]}
+
+# ------------- GENERATE SYNTHETIC DATA ----------------------
+if synthetic_data_TF:
+    param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, .4]
+    params_actual = dict(zip(param_names_actual, param_values_actual))
+    n_hands = 8000
+
+# -------------- PROCESS ACTUAL DATA ----------------------------
+if not synthetic_data_TF:
+    with open("python_hand_data.pickle", 'rb') as f:
+        data = pickle.load(f)
+    players = data['players']
+    games = data['games']
+    df = data['df']
+
 # ------------- CALCULATIONS --------------------------------------
+# overwrites select players when creating a synthetic data and names it Pluribus
+if synthetic_data_TF:
+    select_players = ['Pluribus'] # Not used, only for matching structure of real data loops
+    select_player_comps = {'Pluribus': 'Pluribus'}  # Not used, only for matching structure of real data loops
+    select_type_loss_data = ['all'] # Not used, only for matching structure of real data loops
+else:
+    params_actual = None
+
 # import probability and payoff dictionaries
 try:
     prob_dict, payoff_dict = params.load_prob_payoff_dict(slansky_groups, seat_groups, stack_groups)
 except FileNotFoundError:
     _, _, prob_dict, payoff_dict = params.create_prob_payoff_dict(games, slansky_groups, seat_groups, stack_groups, write_to_file_TF_f=write_prob_payoff_dicts)
 
-
-# ------------- GENERATE SYNTHETIC DATA ----------------------
-# param_values_actual = [0.88, 2.25, 0.88, 0.61, 0.69, .4]
-# params_actual = dict(zip(param_names_actual, param_values_actual))
-# n_hands = 5000
-# choice_situations = generate_synthetic_data(n_hands, params_actual)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
-#
-# select_players = ['Pluribus'] # Not used, only for matching structure of real data loops
-# select_player_comps = {'Pluribus': 'Pluribus'}  # Not used, only for matching structure of real data loops
-# synthetic_data_TF = True
-
-# -------------- PROCESS ACTUAL DATA ----------------------------
-synthetic_data_TF = False
-with open("python_hand_data.pickle", 'rb') as f:
-    data = pickle.load(f)
-players = data['players']
-games = data['games']
-df = data['df']
-
-# select_players = [p.name for p in players]   #### naive, should be selected by hand
-# select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section
-
-select_players = ['Pluribus']
-select_player_comps = {'Pluribus': 'Pluribus'}
-
-# select_players = ['Pluribus']
-# select_player_comps = {'Pluribus': [p.name for p in players if ((p.name != 'Pluribus') and (p.name != 'Pluribus'))]}
-
-# --- configure data and run estimation
-def config_data(select_player, select_player_comps, players_f, select_type_loss_data, select_slansky_ranks_f, select_seats_f, select_stack_ranks_f):
-    # ----- comment out for synthetic fitting -------
-    # create player-specific game, hand index
-    print('Creating data sets for %s' % select_player)
-    choice_situations = list()
-    for t_player in [i for i in range(0, len(players_f)) if players_f[i].name in select_player_comps[select_player]]:  # , 'Gogo', 'MrWhite', 'Hattori']]:
-        game_hand_player_index = create_game_hand_index(players_f[t_player])  # 11 is Budd, strong coef from linear regression
-        t_choice_situations = generate_choice_situations(players_f[t_player], game_hand_player_index, prob_dict, payoff_dict, df)  # select_slansky_ranks_ff=select_slansky_ranks_f, select_stack_ranks_ff=select_stack_ranks_f)
-        choice_situations = choice_situations + t_choice_situations
-    del t_choice_situations
-
-    print("%d choice situations processed" % len(choice_situations))
-
-    # filter out slansky ranks, stack ranks, and data split for post loss vs. not
-    choice_situations_dict = dict()
-    for t_select_type_loss_data in select_type_loss_data:
-        choice_situations_dict.update({t_select_type_loss_data: filter_choice_situations(choice_situations,
-                                                                                         select_slansky_ranks_f=select_slansky_ranks_f,
-                                                                                         select_stack_ranks_f=select_stack_ranks_f,
-                                                                                         select_type_loss_data_f=t_select_type_loss_data)})
-        print("%d choice situations included for %s type of data" % (len(choice_situations_dict[t_select_type_loss_data]), t_select_type_loss_data))
-        # print("%3.3f choose play for %d total situations" % get_play_perc(choice_situations_dict[t_select_type_loss_data], select_slansky_ranks_f, select_stack_ranks_f))
-        print("%3.3f choose play for %d total situations" % get_play_perc(filter_choice_situations(choice_situations_dict[t_select_type_loss_data], select_slansky_ranks_f=select_slansky_ranks_f, select_seats_f=select_seats_f, select_stack_ranks_f=select_stack_ranks_f)))
-    return choice_situations_dict
-
-
-def estimate_model(choice_situations_dict, select_type_loss_data, constrain_beta_TF, provided_phi):
-    # ------------ FIT MODEL -------------------
-    # Optimization parameters
-    maxiter = 100
-    pgtol = 1e-6
-    ftol = 1e-8
-
-    # configure starting values and bounds
-    start_params_all = {'alpha': 0.5, 'lambda': 1.75, 'beta': 0.5, 'gamma': 0.6, 'delta':0.6, 'phi': 0.2}
-    bounds_params_all = {'alpha': (1e-2, 1 - 1e-2), 'lambda': (1e-2, 20), 'beta': (1e-2, 1 - 1e-2), 'gamma': (1e-2, 1 - 1e-2), 'delta': (1e-2, 1 - 1e-2), 'phi': (1e-2, 1 - 1e-2)}
-
-    start_params_names = list(start_params_all.keys())
-    bounds_params_names = list(bounds_params_all.keys())
-    if constrain_beta_TF:
-        start_params_names.pop(start_params_names.index('beta'))
-        bounds_params_names.pop(bounds_params_names.index('beta'))
-    if provided_phi is not None:
-        start_params_names.pop(start_params_names.index('phi'))
-        bounds_params_names.pop(bounds_params_names.index('phi'))
-    start_params = [start_params_all[k] for k in start_params_names]
-    bounds_params = [bounds_params_all[k] for k in bounds_params_names]
-
-    # --- Fit model
-    model_results = dict()
-    models = dict()
-    for type_loss_data in select_type_loss_data:
-        print('\n\n\n\nEstimating %s model' % type_loss_data)
-        model = ProspectModel(endog=np.array([1 if x.choice == success_event_name else 0 for x in choice_situations_dict[type_loss_data]]),
-                              choice_situations_f=choice_situations_dict[type_loss_data],
-                              constrain_beta=constrain_beta_TF,
-                              provided_phi=provided_phi)
-
-        model_result = model.fit(start_params=start_params, method='LBFGS', maxiter=maxiter, disp=True,
-                                 bounds=bounds_params, pgtol=pgtol, factr=ftol)
-        print(model_result.summary())
-        try:
-            print('Actual parameters: %s' % params_actual)
-        except:
-            pass
-        print('Gradient at solution: %s' % dict(zip(param_names_actual, model.score(model_result.params))))
-        model_results.update({type_loss_data: model_result})
-        models.update({type_loss_data: model})
-
-    return model_results, models
-
-
-player_model_results = dict()
-player_models = dict()
+# ----------------- CONFIGURE DATA AND RUN ESTIMATION -------------------------
+# create master data sets (choice situations)
 player_choice_situations = dict()
 for t_select_player in select_players:
     # get choice situations
     if synthetic_data_TF:
-        t_choice_situations_dict = {'all': choice_situations}
-        player_choice_situations.update({t_select_player: t_choice_situations_dict})
+        choice_situations = generate_synthetic_data(n_hands, params_actual)    # t_choice_options = [Option(name='play', outcomes={'win': {'payoff': 100, 'prob': 0.6}, 'lose': {'payoff': -100, 'prob': 0.4}}), Option(name='fold', outcomes={'win': {'payoff': 0.01, 'prob': 0.5}, 'lose': {'payoff': -10, 'prob': 0.5}})]
+        player_choice_situations.update({t_select_player: {'all': choice_situations}})
     else:
-        t_choice_situations_dict = config_data(t_select_player, select_player_comps, players, select_type_loss_data, select_slansky_ranks, select_seats, select_stack_ranks)
-        player_choice_situations.update({t_select_player: t_choice_situations_dict})
+        choice_situations = config_create(t_select_player, select_player_comps, players)
+        player_choice_situations.update({t_select_player: {'all': choice_situations}})
+del t_select_player
+
+# filter data sets and estimate models
+player_model_results = dict()
+player_models = dict()
+for t_select_player in select_players:
+    # filter data sets
+    print('\nFiltering data sets for player %s' % t_select_player)
+    if not synthetic_data_TF:
+        t_choice_situations_dict = config_filter(player_choice_situations[t_select_player]['all'], [x for x in select_type_loss_data if x != 'all'], select_slansky_ranks, select_seats, select_stack_ranks)
+        player_choice_situations[t_select_player].update(t_choice_situations_dict)
+        del t_choice_situations_dict
 
     # estimate model
-    t_estimation_output, t_model = estimate_model(t_choice_situations_dict, select_type_loss_data, constrain_beta_TF=constrain_beta_TF, provided_phi=provided_phi)    # choice_situations, choice_situations_post_loss, choice_situations_not_post_loss
-    player_model_results.update({t_select_player: t_estimation_output})
-    player_models.update({t_select_player: t_model})
+    player_models.update({t_select_player: dict()})
+    player_model_results.update({t_select_player: dict()})
+    for t_type_loss_data in select_type_loss_data:
+        print('\n\nEstimating model %s for player %s' % (t_type_loss_data.upper(), t_select_player.upper()))
+        t_model_result, t_model = estimate_model(player_choice_situations[t_select_player][t_type_loss_data], constrain_beta_TF=constrain_beta_TF, provided_phi=provided_phi, model_formulation=model_formulation)    # choice_situations, choice_situations_post_loss, choice_situations_not_post_loss
+        player_models[t_select_player].update({t_type_loss_data: t_model})
+        player_model_results[t_select_player].update({t_type_loss_data: t_model_result})
+        del t_model, t_model_result
+    del t_type_loss_data
 
-    # del t_estimation_output, t_model, t_choice_situations_dict
 
 
-# ------ Examine player descriptive stats; comment out or delete later -----------
+# ========================== Examine player descriptive stats; comment out or delete later =====================================
 choice_situations = player_choice_situations[select_players[0]]['all']
 df_play_perc = pd.DataFrame(index=select_slansky_ranks, columns=select_seats)
 df_num_obs = pd.DataFrame(index=select_slansky_ranks, columns=select_seats)
@@ -557,7 +690,7 @@ for j in range(1, 7):
     print(j, get_play_perc(filter_choice_situations(choice_situations, select_slansky_ranks_f=[i for i in range(1, 10)], select_seats_f=[j], select_stack_ranks_f=select_stack_ranks)))
 
 
-def make_plots(t_slansky, t_seats, t_stacks, n_rows):
+def make_plots(t_slansky, t_seats, t_stacks, n_rows, lose_weight_f, phi_f):
     # t_slansky = [[1, 2, 3, 4, 5, 6, 7, 8, 9], [3, 4, 5, 6, 7], [1, 2, 8, 9]]  # [[1, 2, 3, 4, 5, 6, 7, 8, 9], [3, 4, 5, 6, 7, 8, 9]]
     # t_seats = [[1, 2, 3, 4, 5, 6]]
     # n_rows = 2
@@ -570,10 +703,10 @@ def make_plots(t_slansky, t_seats, t_stacks, n_rows):
     for t_slansky_select in t_slansky:
         t_plot_pos = -1
         fig1, axs1 = plt.subplots(n_rows, n_cols)
-        fig1.suptitle('Slansky rank: ' + str(t_slansky_select))
+        fig1.suptitle('lose_weight=' + str(lose_weight_f) + ', phi=' + str(phi_f) + ', Slansky rank: ' + str(t_slansky_select))
 
         fig2, axs2 = plt.subplots(n_rows, n_cols)
-        fig2.suptitle('Slansky rank: ' + str(t_slansky_select))
+        fig2.suptitle('lose_weight=' + str(lose_weight_f) + ', phi=' + str(phi_f) + ', Slansky rank: ' + str(t_slansky_select))
         t_filtered_data_sets_seat = list()
         for t_seats_select in t_seats:
             t_slansky_select = t_slansky_select if isinstance(t_slansky_select, list) else [t_slansky_select]
@@ -587,24 +720,18 @@ def make_plots(t_slansky, t_seats, t_stacks, n_rows):
             print('Number of hands played using Slansky %s and seats %s: %3.1f%%' % (t_slansky_select, t_seats_select, get_play_perc(t)[0] * 100))
 
             # get histogram of expected utilities
-            exp_utility_play = list()
-            exp_utility_fold = list()
             exp_utility_fold_net = list()
             exp_utility_prob = list()
             t_choices = list()
             slansky_rank_colors = list()
             fold_TF_colors = list()
             for cs in t:
-                t_util_play = cs.options[cs.option_names.index('play')].calc_exp_utility()
-                t_util_fold = cs.options[cs.option_names.index('fold')].calc_exp_utility()
-                exp_utility_play.append(t_util_play)
-                exp_utility_fold.append(t_util_fold)
-                exp_utility_fold_net.append(t_util_fold - t_util_play)
-                exp_utility_prob.append(1/(1 + (math.exp(.9*(t_util_play - t_util_fold))))) #### multiplying by hardcoded factor, should delete
+                cs.set_util_model_values(lose_weight_f, phi_f)
+                exp_utility_fold_net.append(cs.util_values[cs.option_names.index('fold')] - cs.util_values[cs.option_names.index('play')])
+                exp_utility_prob.append(cs.util_prob_choice)
                 t_choices.append(int(cs.choice == 'fold'))
                 slansky_rank_colors.append(t_color_dict_slansky[cs.slansky_strength])
                 fold_TF_colors.append('r' if cs.choice == 'fold' else 'tab:gray')
-                del t_util_fold, t_util_play
 
             t_plot_pos += 1
             t_plot_pos_x = int(t_plot_pos / n_cols)
@@ -612,34 +739,34 @@ def make_plots(t_slansky, t_seats, t_stacks, n_rows):
 
             if n_cols == 1:
                 axs1[t_plot_pos].scatter(exp_utility_fold_net, t_choices, c=slansky_rank_colors)
-                axs1[t_plot_pos].set_title('seat: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+                axs1[t_plot_pos].set_title('seats: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
 
                 # axs2[t_plot_pos].scatter(exp_utility_fold, exp_utility_play, c=fold_TF_colors)
                 # axs2[t_plot_pos].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
                 axs2[t_plot_pos].scatter(exp_utility_prob, t_choices, c=slansky_rank_colors)
-                axs2[t_plot_pos].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+                axs2[t_plot_pos].set_title('seats: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
             else:
                 axs1[t_plot_pos_x, t_plot_pos_y].scatter(exp_utility_fold_net, t_choices, c=slansky_rank_colors)
-                axs1[t_plot_pos_x, t_plot_pos_y].set_title('seat: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+                axs1[t_plot_pos_x, t_plot_pos_y].set_title('seats: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
 
                 # axs2[t_plot_pos_x, t_plot_pos_y].scatter(exp_utility_fold, exp_utility_play, c=fold_TF_colors)
                 # axs2[t_plot_pos_x, t_plot_pos_y].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
                 axs2[t_plot_pos_x, t_plot_pos_y].scatter(exp_utility_prob, t_choices, c=slansky_rank_colors)
-                axs2[t_plot_pos_x, t_plot_pos_y].set_title('slansky rank: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
+                axs2[t_plot_pos_x, t_plot_pos_y].set_title('seats: ' + str(t_seats_select) + ', obs: ' + str(len(t)))
 
             for ax in axs1.flat:
                 ax.set(xlabel='Net exp utility of folding', ylabel='Fold T/F')
             for ax in axs2.flat:
-                ax.set(xlabel='Logit prob. of play (exp. utility)', ylabel='Fold T/F')
+                ax.set(xlabel='Luce prob. of fold (exp. utility)', ylabel='Fold T/F')
 
         t_filtered_data_sets.append(t_filtered_data_sets_seat)
 
     return t_filtered_data_sets
 
-t_filtered_data_sets = make_plots(t_slansky=[[3, 4, 8, 9]], t_seats=[[3, 4, 5, 6]], t_stacks=[1, 2, 3, 4, 5, 6], n_rows=2)
-estimate_model({'all': t_filtered_data_sets[0][0]}, select_type_loss_data, constrain_beta_TF=True, provided_phi=None) # constrain_beta_TF
+t_filtered_data_sets = make_plots(t_slansky=[[1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 8, 9], [5, 6, 7]], t_seats=[[1, 2, 3, 4, 5, 6], [3, 4, 5, 6], [2]], t_stacks=[1, 2, 3, 4, 5, 6], n_rows=2, lose_weight_f=lose_weight_f, phi_f=phi_f)
+estimate_model({'all': t_filtered_data_sets[2][1]}, select_type_loss_data, constrain_beta_TF=False, provided_phi=None, model_formulation='utility')
 
-# ---------------------------- END DELETE SECTION --------------------------------
+# ======================================= END DELETE SECTION =============================================================
 
 
 # create dataframe(s) for examination
