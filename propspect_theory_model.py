@@ -13,6 +13,7 @@ import pickle
 import matplotlib.pyplot as plt
 import copy
 
+print('hello world')
 
 class Option:
     def __init__(self, name, outcomes):
