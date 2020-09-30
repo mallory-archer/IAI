@@ -5,11 +5,11 @@ import copy
 
 
 class LogisticRegression:
-    def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True, interaction_name_f=None,
-                 convert_bool_dict_f=dict(), convert_ord_list_f=list(), cat_col_omit_dict_f=dict(), **kwds):
+    def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True,
+                 interaction_name_f=list(), convert_bool_dict_f=dict(), convert_ord_list_f=list(), cat_col_omit_dict_f=dict(), **kwds):
         self.endog_name = endog_name_f
         self.exog_name = exog_name_f
-        self.data = data_f
+        self.data = data_f.reindex()
         self.add_constant = add_constant_f
         self.interaction_name = interaction_name_f
         self.convert_bool_dict = convert_bool_dict_f   # convert_bool_dict_f
@@ -17,6 +17,7 @@ class LogisticRegression:
         self.cat_col_names = list()
         self.cat_col_omit_dict = cat_col_omit_dict_f
         self.cat_col_drop_names = list()
+        self.dummy_col_omit_list = list()
         self.exog_name_model = None
         self.model_data = None
         self.model = None
@@ -70,6 +71,59 @@ class LogisticRegression:
         t_df.columns = t_col_names
         return t_df
 
+    def create_interactions(self):
+        def create_dummy_df(data_f, v1, v2, drop_list_f):
+            prefix_sep = '_'
+
+            if (data_f[v1].dtype == bool) and (data_f[v2].dtype == bool):
+                # both bool - create interaction effect directly
+                t_df = pd.DataFrame(data_f[v1] & data_f[v2], columns=[v1 + ' * ' + v2 + '_INT'])
+                return t_df, ({v1: None}, {v2: None})
+            elif (data_f[v1].dtype != bool) and (data_f[v2].dtype != bool):
+                # both cat
+                v1_dummies = pd.get_dummies(data_f[v1], prefix_sep=prefix_sep, dtype=bool)
+                v1_omit = data_f[v1].mode(dropna=True).values[0] if v1 not in list(
+                    drop_list_f.keys()) else drop_list_f[v1]
+
+                v2_dummies = pd.get_dummies(data_f[v2], prefix_sep=prefix_sep, dtype=bool)
+                v2_omit = data_f[v2].mode(dropna=True).values[0] if v2 not in list(
+                    drop_list_f.keys()) else drop_list_f[v2]
+                t_df = pd.DataFrame(index=data_f.index)
+                for c1 in [x for x in v1_dummies.columns if x != v1_omit]:
+                    for c2 in [x for x in v2_dummies.columns if x != v2_omit]:
+                        t_df = pd.concat(
+                            [t_df, pd.DataFrame(v1_dummies[c1] & v2_dummies[c2], columns=[c1 + ' * ' + c2 + '_INT'])],
+                            axis=1)
+                return t_df, ({v1: v1_omit}, {v2: v2_omit})
+            else:
+                # one bool
+                if data_f[v1].dtype == bool:
+                    vb = v1
+                    vd = v2
+                else:
+                    vb = v2
+                    vd = v1
+                vd_dummies = pd.get_dummies(data_f[vd], prefix_sep=prefix_sep, dtype=bool)
+                vd_omit = data_f[vd].mode(dropna=True).values[0] if vd not in list(
+                    drop_list_f.keys()) else drop_list_f[vd]
+                t_df = pd.DataFrame(index=data_f.index)
+                for c in [x for x in vd_dummies.columns if x != vd_omit]:
+                    t_df = pd.concat(
+                        [t_df, pd.DataFrame(data_f[vb] & vd_dummies[c], columns=[vb + ' * ' + c + '_INT'])], axis=1)
+                return t_df, ({vb: None}, {vd: None})
+
+        t_df = pd.DataFrame(index=self.data.index)
+        t_dummy_col_omit_list = list()
+        for int_act_col1, int_act_col2 in self.interaction_name:
+            t_dummy, t_dummy_omit = create_dummy_df(self.data, int_act_col1, int_act_col2, self.cat_col_omit_dict)
+            t_df = pd.concat([t_df, t_dummy], axis=1)
+            t_dummy_col_omit_list.append(t_dummy_omit)
+            del t_dummy, t_dummy_omit
+        del int_act_col1, int_act_col2
+        self.dummy_col_omit_list = t_dummy_col_omit_list
+        
+        return t_df
+        
     def code_variables(self):
         # get new variable matrices
         if len(self.convert_bool_dict) > 0:
@@ -83,10 +137,16 @@ class LogisticRegression:
             df_ord_f = None
 
         df_cat_f = self.convert_cat_to_dummies()
-        return df_bool_f, df_ord_f, df_cat_f
+
+        if len(self.interaction_name) > 0:
+            df_interaction_f = self.create_interactions()
+        else:
+            df_interaction_f = None
+
+        return df_bool_f, df_ord_f, df_cat_f, df_interaction_f
 
     def refresh_model_data(self):
-        df_bool_f, df_ord_f, df_cat_f = self.code_variables()
+        df_bool_f, df_ord_f, df_cat_f, df_interaction_f = self.code_variables()
 
         self.check_for_exog_conflict()
 
@@ -99,12 +159,12 @@ class LogisticRegression:
         else:
             df_cat_f_dropped_omit = None
 
-        self.model_data = pd.concat([self.data[self.endog_name], self.data[t_remain_exog], df_bool_f, df_ord_f, df_cat_f_dropped_omit], axis=1)
+        self.model_data = pd.concat([self.data[self.endog_name], self.data[t_remain_exog], df_bool_f, df_ord_f, df_cat_f_dropped_omit, df_interaction_f], axis=1)
 
         self.exog_name_model = [x for x in self.model_data if x != self.endog_name]
 
     def create_model_object(self):
-        model_mat = copy.deepcopy(test.model_data)
+        model_mat = copy.deepcopy(self.model_data)
 
         # convert booleans to floats explicitly
         for c in model_mat.columns:
@@ -145,12 +205,24 @@ def create_master_data_frame(games_f):
                 obs_list_f.append(t_dict)
                 del t_dict
     df_f = pd.DataFrame(obs_list_f)
-    df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
 
+    # add additional features
+    df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
+    df_f['human_player_TF'] = (df_f['player'] != 'Plurbius')
+    # categorize loss, win, neutral
+    df_f['outcome_previous_cat'] = 'neutral'
+    df_f.loc[df_f['outcome_previous'] < -100, 'outcome_previous_cat'] = 'loss'
+    df_f.loc[df_f['outcome_previous'] > 0, 'outcome_previous_cat'] = 'win'
+    df_f['outcome_previous_loss_TF'] = (df_f['outcome_previous_cat'] == 'loss')
+    df_f['outcome_previous_win_TF'] = (df_f['outcome_previous_cat'] == 'win')
+
+    # specify type
     df_f = df_f.astype({'game': str, 'hand': str, 'player': str,
-                 'slansky': str, 'seat': str,
-                 'stack_rank': str, 'start_stack': float,
-                 'preflop_action': str, 'outcome': float, 'preflop_fold_TF': bool})
+                        'slansky': str, 'seat': str, 'stack_rank': str, 'start_stack': float,
+                        'preflop_action': str, 'outcome': float, 'outcome_previous': float,
+                        'preflop_fold_TF': bool, 'human_player_TF': bool,
+                        'outcome_previous_cat': str, 'outcome_previous_loss_TF': bool, 'outcome_previous_win_TF': bool
+                        })
     return df_f
 
 
@@ -184,18 +256,25 @@ games = data['games']
 
 # ----- CREATE DATAFRAME -----
 df_master = create_master_data_frame(games)
-print_df_summary(df_master)
+print_df_summary(df_master, return_player_summary_f=False)
 
 # ----- SPECIFY MODEL PARAMS ----
 endog_var_name = 'preflop_fold_TF'
-exog_var_name = ['player']
-ordinal_vars = ['slansky', 'stack_rank']
-bool_vars = {'seat': '2'}
-categorical_drop_vals = {'player': 'Bill'}  # {'player': 'Bill'}
+add_constant = False
+exog_var_name = ['player', 'outcome_previous_cat']
+ordinal_vars = ['slansky', 'seat_map', 'stack_rank']
+bool_vars = {}
+categorical_drop_vals = {} #{'player': 'Pluribus', 'seat': '6'}  # {'player': 'Bill'}
+interaction_vars = [('outcome_previous_loss_TF', 'player'), ('outcome_previous_win_TF', 'player')]   #[('outcome_previous_loss_TF', 'player')]
 
-add_constant = True
+# filter and map
+df_data = df_master.reindex()
+df_data['seat_map'] = df_data['seat'].map({'1': '5', '2': '6', '3': '1', '4': '2', '5': '3', '6': '4'})
 
-test = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_master, convert_ord_list_f=ordinal_vars, convert_bool_dict_f=bool_vars, cat_col_omit_dict_f=categorical_drop_vals, add_constant_f=True, interaction_name_f=None)
+test = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_data,
+                          add_constant_f=add_constant,
+                          convert_ord_list_f=ordinal_vars, convert_bool_dict_f=bool_vars,
+                          cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
 test.estimate_model()
 
 # ----- RESEARCH -----
