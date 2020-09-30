@@ -1,5 +1,3 @@
-print('hello world params')
-
 import numpy as np
 import scipy.optimize
 import assumption_calc_functions as acf
