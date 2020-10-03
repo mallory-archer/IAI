@@ -110,6 +110,11 @@ _ = [g.drop_bad_hands() for g in games.values()]
 
 _, _, _, _ = meta_game_stats(games)
 
+# ----- map player names which appear to be mis-labeled across files that were combined above
+for _, g in games.items():
+    g.map_players()
+_, _, _, _ = meta_game_stats(games)
+
 # ----- parse by player -----
 all_players = set()
 for _, g in games.items():

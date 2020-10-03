@@ -277,6 +277,14 @@ test = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name
                           cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
 test.estimate_model()
 
+#---------
+test.__dict__.keys()
+
+df_player_stack = pd.DataFrame(columns=list(games['94'].players), index=list(games['94'].hands.keys()))
+for h_num, h in games['94'].hands.items():
+    df_player_stack.loc[h_num] = h.start_stack
+df_player_stack.plot()
+df_player_stack.iloc[-1,:].sum()
 # ----- RESEARCH -----
 # QUESTION : within game, what is the proportion of preflop folds following losing hand vs not losing hand? (discount hands where player is blind)
 # ----- define research question specific functions -----

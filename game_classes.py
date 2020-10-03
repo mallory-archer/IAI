@@ -132,6 +132,18 @@ class Hand:
         except IndexError:
             return None
 
+    def map_players(self, name_map):
+        for old, new in name_map.items():
+            self.players = [new if x == old else x for x in self.players]
+            self.small_blind = new if self.small_blind == old else self.small_blind
+            self.big_blind = new if self.big_blind == old else self.big_blind
+            for r in self.cards.keys():
+                self.cards[r] = dict(zip([new if x == old else x for x in list(self.cards[r].keys())], list(self.cards[r].values())))
+            self.odds = dict(zip([new if x == old else x for x in list(self.odds.keys())], list(self.odds.values())))
+            for a in self.actions.keys():
+                self.actions[a] = dict(zip([new if x == old else x for x in list(self.actions[a].keys())], list(self.actions[a].values())))
+            self.outcomes = dict(zip([new if x == old else x for x in list(self.outcomes.keys())], list(self.outcomes.values())))
+
     def check_player_completeness(self, check_atts_ff=None):
         try:
             if check_atts_ff is None:
@@ -170,6 +182,7 @@ class Game:
 
         self.combine_game_add = None
         self.combine_player_diff = None
+        self.name_map = None
 
         self.summarize_hands()
 
@@ -196,6 +209,7 @@ class Game:
         return [y - 1 for x, y in zip(t_f, t_f[1:]) if y - x != 1]
 
     def parse_players(self):
+        self.players = set()
         for _, x in self.hands.items():
             if x.number is not None:
                 self.players.update(x.players)
@@ -225,7 +239,7 @@ class Game:
 
                 # get rankings of stacks based on relative stack sizes
                 self.hands[str(t_h_num)].start_stack_rank = dict(zip(self.hands[str(t_h_num)].start_stack.keys(), rankdata([-i for i in self.hands[str(t_h_num)].start_stack.values()], method='max')))
-                
+
             # add total game outcome to game object
             self.final_outcome = self.hands[str(self.end_hand)].start_stack.copy()
             for t_p, t_s in self.hands[str(self.end_hand)].outcomes.items():
@@ -246,16 +260,59 @@ class Game:
         self.error_hands = self.get_error_hands()
 
     def combine_games(self, game2, print_f=True):
+        def get_next_player_in_seat(seat_num_current, hand_next):
+            return hand_next.players[seat_num_current]
+
+        def get_anticipated_player_in_seat(seat_num_current, hand_current):
+            return hand_current.players[(seat_num_current + 1) % 6]
+
+        def map_name_change(hand_current, hand_next):
+            t_hand_name_changes = dict()
+            for i in range(0, len(hand_current.players)):
+                t_actual = get_next_player_in_seat(i, hand_next)
+                t_anticipated = get_anticipated_player_in_seat(i, hand_current)
+                if t_actual != t_anticipated:
+                    t_hand_name_changes.update({t_actual: t_anticipated})
+            return t_hand_name_changes
+
         self.combine_game_add = game2.number
-        combine_player_set_diff_f = self.players - game2.players
+        combine_player_set_diff_f = (self.players - game2.players).union(game2.players - self.players)
         if len(combine_player_set_diff_f) > 0:
             self.combine_player_diff = combine_player_set_diff_f
+
+            # try-except in case filename convention is reversed / check that assumed next hand is sequentially numbered
+            last_hand_first_file = min(max([int(x) for x in self.hands.keys() if x is not None]), max([int(x) for x in game2.hands.keys() if x is not None]))
+            try:
+                h_end_first = self.hands[str(last_hand_first_file)]
+                h_begin_second = game2.hands[str(last_hand_first_file + 1)]
+                self.name_map = map_name_change(h_end_first, h_begin_second)
+            except KeyError:
+                try:
+                    h_end_first = game2.hands[str(last_hand_first_file)]
+                    h_begin_second = self.hands[str(last_hand_first_file + 1)]
+                    self.name_map = map_name_change(h_end_first, h_begin_second)
+                except KeyError:
+                    pass
+
             if print_f:
                 print("WARNING: Different players for combined games %s and %s" % (self.number, game2.number))
                 print("Difference: %s" % self.combine_player_diff)
+                print("Proposed map: %s" % self.name_map)
 
         self.hands.update(game2.hands)
         self.summarize_hands()
+
+    def map_players(self):
+        for _, h in self.hands.items():
+            if self.name_map is not None:
+                h.map_players(self.name_map)
+        self.parse_players()
+        self.get_stack_sizes()
+        # call parse_players after hands have been updated to get new list of players observe din hands
+        # call get_stack_sizes after hands have been updated to get final outcomes
+        # self.start_stack = None  # calculated in Game object because it is based on change log of previous hands
+        # self.start_stack_rank = None  # calculated in Game object because it is based on start_stack, which is change log of previous hands
+        return None
 
     def drop_bad_hands(self, hand_num_null_TF=True):
         t_num_hands_dropped = 0
