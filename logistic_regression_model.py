@@ -280,11 +280,22 @@ test.estimate_model()
 #---------
 test.__dict__.keys()
 
-df_player_stack = pd.DataFrame(columns=list(games['94'].players), index=list(games['94'].hands.keys()))
-for h_num, h in games['94'].hands.items():
-    df_player_stack.loc[h_num] = h.start_stack
-df_player_stack.plot()
-df_player_stack.iloc[-1,:].sum()
+num_min_hands = 10000
+g_num_min_hands = None
+for g in games.values():
+    num_min_hands = min(num_min_hands, len(g.hands))
+    g_num_min_hands = g.number if len(g.hands) == num_min_hands else g_num_min_hands
+
+buy_in = 10000
+select_g_num = '74'
+df_player_stack = pd.DataFrame(columns=list(games[select_g_num].players), index=list(games[select_g_num].hands.keys()))
+for h_num, h in games[select_g_num].hands.items():
+    df_player_stack.loc[h_num] = dict([(k, v+buy_in) for k, v in h.start_stack.items()])
+df_player_stack.loc[str(int(df_player_stack.index[-1]) + 1)] = dict([(p, h.start_stack[p] + buy_in + h.outcomes[p]) for p in h.start_stack.keys()])
+df_player_stack.plot(title=('Game %s start stacks.\nEnd amount of money on table: %3.1f' % (select_g_num, df_player_stack.iloc[-1, :].sum()))).set_xlabel('hand_num')
+
+import matplotlib.pyplot as plt
+
 # ----- RESEARCH -----
 # QUESTION : within game, what is the proportion of preflop folds following losing hand vs not losing hand? (discount hands where player is blind)
 # ----- define research question specific functions -----

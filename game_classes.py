@@ -1,6 +1,5 @@
 import json
 from odds_functions import slansky_strength, chen_strength, exp_val_implied_prob, est_prob_slansky
-# from params import slansky_prob_dict
 from scipy.stats import rankdata
 
 
@@ -47,11 +46,12 @@ class Hand:
     def get_cards(self):
         try:
             t_all_cards = self.hand_data.split(':')[3].split('|')
-            if len(t_all_cards) > len(self.players):
+            if len(t_all_cards[-1]) > 4:
                 t_board_cards = t_all_cards[-1].split('/')
-                t_hole_cards = t_all_cards[:-1] + [
-                    t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
-                return {'hole_cards': dict(zip(self.players, t_hole_cards)), 'board_cards': t_board_cards}
+                t_hole_cards = t_all_cards[:-1] + [t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
+                t_cards = {'hole_cards': dict(zip(self.players, t_hole_cards))}
+                t_cards.update(dict(zip(['flop', 'turn', 'river'][0:len(t_board_cards)], t_board_cards)))  # ,   'board_cards': t_board_cards}
+                return t_cards
             else:
                 t_hole_cards = t_all_cards
                 return {'hole_cards': dict(zip(self.players, t_hole_cards))}
@@ -137,8 +137,7 @@ class Hand:
             self.players = [new if x == old else x for x in self.players]
             self.small_blind = new if self.small_blind == old else self.small_blind
             self.big_blind = new if self.big_blind == old else self.big_blind
-            for r in self.cards.keys():
-                self.cards[r] = dict(zip([new if x == old else x for x in list(self.cards[r].keys())], list(self.cards[r].values())))
+            self.cards['hole_cards'] = dict(zip([new if x == old else x for x in list(self.cards['hole_cards'].keys())], list(self.cards['hole_cards'].values())))
             self.odds = dict(zip([new if x == old else x for x in list(self.odds.keys())], list(self.odds.values())))
             for a in self.actions.keys():
                 self.actions[a] = dict(zip([new if x == old else x for x in list(self.actions[a].keys())], list(self.actions[a].values())))
