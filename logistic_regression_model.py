@@ -3,6 +3,7 @@ import pandas as pd
 from statsmodels.api import Logit
 import copy
 
+pd.options.display.max_columns = 25
 
 class LogisticRegression:
     def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True,
@@ -208,7 +209,7 @@ def create_master_data_frame(games_f):
 
     # add additional features
     df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
-    df_f['human_player_TF'] = (df_f['player'] != 'Plurbius')
+    df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
     # categorize loss, win, neutral
     df_f['outcome_previous_cat'] = 'neutral'
     df_f.loc[df_f['outcome_previous'] < -100, 'outcome_previous_cat'] = 'loss'
@@ -248,6 +249,27 @@ def print_df_summary(df_f, return_player_summary_f=True):
         return df_player_summary_f
 
 
+def create_formatted_output(df_f):
+    # summary statistics fold/play
+    def create_df_row(df_ff):
+        t_df_ff = df_ff.groupby('human_player_TF').preflop_fold_TF.agg(['count', 'sum'])
+        t_df_ff['perc'] = t_df_ff['sum']/t_df_ff['count']
+        return {'human_perc_preflop_fold': t_df_ff.loc[True, 'perc'], 'human_nobs': t_df_ff.loc[True, 'count'], 'ADM_perc_preflop_fold': t_df_ff.loc[False, 'perc'], 'ADM_nobs': t_df_ff.loc[False, 'count']}
+
+    #### NEEDS TO ADD THESE FILTERS AS LOOKBACKS
+    zero_outcome_f = (df_f.outcome == 0) # fold, no blind ("zero" outcome)
+    blind_only_outcome_f = (abs(df_f.outcome) == 50) | (abs(df_f.outcome) == 100) | (abs(df_f.outcome) == 150)
+    loss_outcome_f = (df_f.outcome < 0) & (df_f.outcome != -50) & (df_f.outcome != -100)
+    win_outcome_f = (df_f.outcome > 0) & (df_f.outcome != 150)
+
+    df_output_f = pd.DataFrame.from_dict({'all': create_df_row(df_f)}, orient='index')
+    for filter_name, filter in dict(zip(['zero_outcome', 'blind_only_outcome', 'loss_outcome', 'win_outcome'], [zero_outcome_f, blind_only_outcome_f, loss_outcome_f, win_outcome_f])).items():
+        df_output_f = pd.concat([df_output_f, pd.DataFrame.from_dict({filter_name: create_df_row(df_f.loc[filter])}, orient='index')], axis=0)
+
+    return df_output_f
+
+# print(create_formatted_output(df_master))
+
 # ----- LOAD DATA -----
 with open("python_hand_data.pickle", 'rb') as f:
     data = pickle.load(f)
@@ -277,7 +299,9 @@ test = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name
                           cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
 test.estimate_model()
 
-#---------
+#--------- SCRATCH CODE ------
+df_master.loc[((df_master.outcome > -5000) & (df_master.outcome < -150)) | ((df_master.outcome > 150) & (df_master.outcome < 5000)), 'outcome'].hist()
+
 test.__dict__.keys()
 
 num_min_hands = 10000
@@ -288,11 +312,14 @@ for g in games.values():
 
 buy_in = 10000
 select_g_num = '74'
-df_player_stack = pd.DataFrame(columns=list(games[select_g_num].players), index=list(games[select_g_num].hands.keys()))
-for h_num, h in games[select_g_num].hands.items():
-    df_player_stack.loc[h_num] = dict([(k, v+buy_in) for k, v in h.start_stack.items()])
-df_player_stack.loc[str(int(df_player_stack.index[-1]) + 1)] = dict([(p, h.start_stack[p] + buy_in + h.outcomes[p]) for p in h.start_stack.keys()])
-df_player_stack.plot(title=('Game %s start stacks.\nEnd amount of money on table: %3.1f' % (select_g_num, df_player_stack.iloc[-1, :].sum()))).set_xlabel('hand_num')
+num_random = 5
+import random
+for select_g_num in random.sample(list(games.keys()), num_random) + [g_num_min_hands]:
+    df_player_stack = pd.DataFrame(columns=list(games[select_g_num].players), index=list(games[select_g_num].hands.keys()))
+    for h_num, h in games[select_g_num].hands.items():
+        df_player_stack.loc[h_num] = dict([(k, v+buy_in) for k, v in h.start_stack.items()])
+    df_player_stack.loc[str(int(df_player_stack.index[-1]) + 1)] = dict([(p, h.start_stack[p] + buy_in + h.outcomes[p]) for p in h.start_stack.keys()])
+    df_player_stack.plot(title=('Game %s start stacks.\nEnd amount of money on table: %3.1f' % (select_g_num, df_player_stack.iloc[-1, :].sum()))).set_xlabel('hand_num')
 
 import matplotlib.pyplot as plt
 
