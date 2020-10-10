@@ -1,6 +1,7 @@
 # summary stats on data set
 import pandas as pd
-
+from scipy.stats import norm
+import numpy as np
 
 def create_game_hand_index(player_f):
     game_hand_index_f = dict()
@@ -412,6 +413,14 @@ def calc_prob_winning_slansky_rank(games_f, slansky_groups_f=None, seat_groups_f
     # # tableau_df2_f.to_csv('observation_data_frame.csv')
 
     return slansky_prob_dict_f, slansky_payoff_dict_f, prob_dict, payoff_dict
+
+
+def two_sample_test_prop(p1_f, p2_f, n1_f, n2_f, n_sides_f):
+    phat_f = ((p1_f * n1_f) + (p2_f * n2_f))/(n1_f + n2_f)
+    z_f = (p1_f - p2_f)/np.sqrt(phat_f * (1 - phat_f) * ((1/n1_f) + (1/n2_f)))
+    p_f = (1 - norm.cdf(abs(z_f))) * n_sides_f
+    return z_f, p_f
+
 
 # ------ archive -------
 # def calc_exp_loss_wins(games_f, small_blind_f=50, big_blind_f=100):

@@ -2,8 +2,10 @@ import pickle
 import pandas as pd
 from statsmodels.api import Logit
 import copy
+from assumption_calc_functions import two_sample_test_prop
 
 pd.options.display.max_columns = 25
+
 
 class LogisticRegression:
     def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True,
@@ -207,22 +209,37 @@ def create_master_data_frame(games_f):
                 del t_dict
     df_f = pd.DataFrame(obs_list_f)
 
-    # add additional features
-    df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
-    df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
-    # categorize loss, win, neutral
-    df_f['outcome_previous_cat'] = 'neutral'
-    df_f.loc[df_f['outcome_previous'] < -100, 'outcome_previous_cat'] = 'loss'
-    df_f.loc[df_f['outcome_previous'] > 0, 'outcome_previous_cat'] = 'win'
-    df_f['outcome_previous_loss_TF'] = (df_f['outcome_previous_cat'] == 'loss')
-    df_f['outcome_previous_win_TF'] = (df_f['outcome_previous_cat'] == 'win')
-
     # specify type
     df_f = df_f.astype({'game': str, 'hand': str, 'player': str,
                         'slansky': str, 'seat': str, 'stack_rank': str, 'start_stack': float,
                         'preflop_action': str, 'outcome': float, 'outcome_previous': float,
-                        'preflop_fold_TF': bool, 'human_player_TF': bool,
-                        'outcome_previous_cat': str, 'outcome_previous_loss_TF': bool, 'outcome_previous_win_TF': bool
+                        })
+    return df_f
+
+
+def engineer_features(df_f):
+    # add additional features
+    df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
+    df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
+    
+    # categorize loss, win, neutral
+    df_f['outcome_previous_cat'] = 'neutral'
+    df_f.loc[df_f['outcome_previous'] < 0, 'outcome_previous_cat'] = 'loss'
+    df_f.loc[df_f['outcome_previous'] > 0, 'outcome_previous_cat'] = 'win'
+    df_f['loss_outcome_previous_TF'] = (df_f['outcome_previous_cat'] == 'loss')
+    df_f['win_outcome_previous_TF'] = (df_f['outcome_previous_cat'] == 'win')
+
+    df_f['zero_outcome_previous_TF'] = (df_f.outcome_previous == 0)  # fold, no blind ("zero" outcome_previous)
+    df_f['blind_only_outcome_previous_TF'] = (abs(df_f.outcome_previous) == 50) | (abs(df_f.outcome_previous) == 100) | (abs(df_f.outcome_previous) == 150)
+    df_f['zero_or_blind_only_outcome_previous_TF'] = df_f['zero_outcome_previous_TF'] | df_f['blind_only_outcome_previous_TF']
+    df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -50) & (df_f.outcome_previous != -100)
+    df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != 150)
+
+    df_f = df_f.astype({'preflop_fold_TF': bool, 'human_player_TF': bool,
+                        'outcome_previous_cat': str, 'loss_outcome_previous_TF': bool, 'win_outcome_previous_TF': bool,
+                        'zero_outcome_previous_TF': bool, 'blind_only_outcome_previous_TF': bool,
+                        'zero_or_blind_only_outcome_previous_TF': bool,
+                        'loss_outcome_xonlyblind_previous_TF': bool, 'win_outcome_xonlyblind_previous_TF': bool
                         })
     return df_f
 
@@ -249,24 +266,37 @@ def print_df_summary(df_f, return_player_summary_f=True):
         return df_player_summary_f
 
 
-def create_formatted_output(df_f):
+def create_formatted_output(df_f, cases_f):
     # summary statistics fold/play
     def create_df_row(df_ff):
         t_df_ff = df_ff.groupby('human_player_TF').preflop_fold_TF.agg(['count', 'sum'])
         t_df_ff['perc'] = t_df_ff['sum']/t_df_ff['count']
         return {'human_perc_preflop_fold': t_df_ff.loc[True, 'perc'], 'human_nobs': t_df_ff.loc[True, 'count'], 'ADM_perc_preflop_fold': t_df_ff.loc[False, 'perc'], 'ADM_nobs': t_df_ff.loc[False, 'count']}
 
-    #### NEEDS TO ADD THESE FILTERS AS LOOKBACKS
-    zero_outcome_f = (df_f.outcome == 0) # fold, no blind ("zero" outcome)
-    blind_only_outcome_f = (abs(df_f.outcome) == 50) | (abs(df_f.outcome) == 100) | (abs(df_f.outcome) == 150)
-    loss_outcome_f = (df_f.outcome < 0) & (df_f.outcome != -50) & (df_f.outcome != -100)
-    win_outcome_f = (df_f.outcome > 0) & (df_f.outcome != 150)
-
     df_output_f = pd.DataFrame.from_dict({'all': create_df_row(df_f)}, orient='index')
-    for filter_name, filter in dict(zip(['zero_outcome', 'blind_only_outcome', 'loss_outcome', 'win_outcome'], [zero_outcome_f, blind_only_outcome_f, loss_outcome_f, win_outcome_f])).items():
-        df_output_f = pd.concat([df_output_f, pd.DataFrame.from_dict({filter_name: create_df_row(df_f.loc[filter])}, orient='index')], axis=0)
+    for filter in cases_f:
+        df_output_f = pd.concat([df_output_f, pd.DataFrame.from_dict({filter: create_df_row(df_f.loc[df_f[filter]])}, orient='index')], axis=0)
 
     return df_output_f
+
+
+def run_within_hypothesis_tests(df_f, n_sides_f, baseline_name_f, test_case_names_f, player_names_f):
+    # within-player hypothesis tests for diff in probability of folding preflop (do players react to losing/winning?)
+    col_name1_f = '_pval_2sample_vs_'
+    col_name2_f = '_diff_'
+    for p in player_names_f:
+        df_f[p + col_name2_f + baseline_name_f] = None
+        df_f[p + col_name1_f + baseline_name_f] = None
+        for test_case in test_case_names_f:
+            if test_case != baseline_name_f:
+                df_f.loc[test_case, p + col_name2_f + baseline_name_f] = df_f.loc[test_case, p + '_perc_preflop_fold'] - df_f.loc[baseline_name_f, p + '_perc_preflop_fold']
+                _, df_f.loc[test_case, p + col_name1_f + baseline_name_f] = two_sample_test_prop(
+                    df_f.loc[baseline_name_f, p + '_perc_preflop_fold'],
+                    df_f.loc[test_case, p + '_perc_preflop_fold'],
+                    df_f.loc[baseline_name_f, p + '_nobs'],
+                    df_f.loc[baseline_name_f, p + '_nobs'], n_sides_f)
+    return df_f
+
 
 # print(create_formatted_output(df_master))
 
@@ -278,7 +308,27 @@ games = data['games']
 
 # ----- CREATE DATAFRAME -----
 df_master = create_master_data_frame(games)
+df_master = engineer_features(df_master)
 print_df_summary(df_master, return_player_summary_f=False)
+
+# ----- HYPOTHESIS TESTING -----
+df_data_summary = create_formatted_output(df_master, cases_f=['zero_outcome_previous_TF',
+                                                              'loss_outcome_previous_TF', 'win_outcome_previous_TF',
+                                                              'loss_outcome_xonlyblind_previous_TF',
+                                                              'win_outcome_xonlyblind_previous_TF',
+                                                              'blind_only_outcome_previous_TF',
+                                                              'zero_or_blind_only_outcome_previous_TF'
+                                                              ])
+df_data_summary = run_within_hypothesis_tests(df_data_summary, n_sides_f=2,
+                                              baseline_name_f='zero_outcome_previous_TF',
+                                              test_case_names_f=['loss_outcome_previous_TF', 'win_outcome_previous_TF',
+                                                                 'zero_outcome_previous_TF', 'blind_only_outcome_previous_TF',
+                                                                 'zero_or_blind_only_outcome_previous_TF',
+                                                                 'loss_outcome_xonlyblind_previous_TF',
+                                                                 'win_outcome_xonlyblind_previous_TF'],
+                                              player_names_f=['human', 'ADM'])
+
+df_data_summary.to_csv('data_summary.csv')
 
 # ----- SPECIFY MODEL PARAMS ----
 endog_var_name = 'preflop_fold_TF'
