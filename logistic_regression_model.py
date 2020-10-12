@@ -1,3 +1,4 @@
+import math
 import pickle
 import pandas as pd
 from statsmodels.api import Logit
@@ -8,7 +9,7 @@ pd.options.display.max_columns = 25
 
 
 class LogisticRegression:
-    def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True,
+    def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True, scale_vars_list_f=list(),
                  interaction_name_f=list(), convert_bool_dict_f=dict(), convert_ord_list_f=list(), cat_col_omit_dict_f=dict(), **kwds):
         self.endog_name = endog_name_f
         self.exog_name = exog_name_f
@@ -21,6 +22,7 @@ class LogisticRegression:
         self.cat_col_omit_dict = cat_col_omit_dict_f
         self.cat_col_drop_names = list()
         self.dummy_col_omit_list = list()
+        self.scale_vars_list = scale_vars_list_f
         self.exog_name_model = None
         self.model_data = None
         self.model = None
@@ -174,6 +176,16 @@ class LogisticRegression:
             if model_mat[c].dtype == bool:
                 model_mat[c] = model_mat[c].astype(float)
 
+        # scale specified vars to N(0,1)
+        for c in self.scale_vars_list:
+            try:
+                xbar = model_mat[c].mean()
+                s = model_mat[c].std()
+                model_mat[c] = model_mat[c].apply(lambda x: (x - xbar) / s)
+                del xbar, s
+            except KeyError:
+                print('Warning: specified variable to scale, %s, is not included in model covariates' % c)
+
         # drop rows with na
         model_mat.dropna(inplace=True)
 
@@ -202,9 +214,11 @@ def create_master_data_frame(games_f):
                           'preflop_action': h.actions['preflop'][p_name], 'outcome': h.outcomes[p_name]}
                 try:
                     t_prev_outcome = g.hands[str(int(h_num) - 1)].outcomes[p_name]
+                    t_relative_start_stack = h.relative_start_stack[p_name]
                 except KeyError:
                     t_prev_outcome = None
-                t_dict.update({'outcome_previous': t_prev_outcome})
+                    t_relative_start_stack = None
+                t_dict.update({'outcome_previous': t_prev_outcome, 'relative_start_stack': t_relative_start_stack})
                 obs_list_f.append(t_dict)
                 del t_dict
     df_f = pd.DataFrame(obs_list_f)
@@ -212,6 +226,7 @@ def create_master_data_frame(games_f):
     # specify type
     df_f = df_f.astype({'game': str, 'hand': str, 'player': str,
                         'slansky': str, 'seat': str, 'stack_rank': str, 'start_stack': float,
+                        'relative_start_stack': float,
                         'preflop_action': str, 'outcome': float, 'outcome_previous': float,
                         })
     return df_f
@@ -235,6 +250,8 @@ def engineer_features(df_f):
     df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -50) & (df_f.outcome_previous != -100)
     df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != 150)
 
+    # grouping players (somewhat arbitrary...)
+    df_f['sneaky_robot_player_TF'] = df_f['player'].apply(lambda x: x in ['Bill', 'MrBrown', 'MrPink', 'MrWhite'])
     df_f = df_f.astype({'preflop_fold_TF': bool, 'human_player_TF': bool,
                         'outcome_previous_cat': str, 'loss_outcome_previous_TF': bool, 'win_outcome_previous_TF': bool,
                         'zero_outcome_previous_TF': bool, 'blind_only_outcome_previous_TF': bool,
@@ -298,7 +315,32 @@ def run_within_hypothesis_tests(df_f, n_sides_f, baseline_name_f, test_case_name
     return df_f
 
 
-# print(create_formatted_output(df_master))
+def inverse_logit(x):
+    return math.exp(x) / (1 + math.exp(x))
+
+
+def format_logistic_regression_output(logistic_model_f):
+    print('WARNING: calculation of mean effects assumes CONSTANT was present in model.')
+    # get mean of coefficient values to calculate average effects
+
+    coef_const_vals_f = dict(logistic_model_f.model_data[[x for x in logistic_model_f.model_result.params.index
+                                                          if ((x != 'const') and
+                                                          (logistic_model_f.model_data[x].dtype != bool))]].mean())
+    coef_const_vals_f.update({'const': 1})
+    coef_const_vals_f.update(dict([(x, 0) for x in logistic_model_f.model_result.params.index if ((x != 'const') and (logistic_model_f.model_data[x].dtype == bool))]))
+
+    df_f = pd.DataFrame(data={'params': logistic_model_f.model_result.params, 'std_err': logistic_model_f.model_result.bse, 't_stat': logistic_model_f.model_result.tvalues, 'pvalue': logistic_model_f.model_result.pvalues, 'base_value': coef_const_vals_f})
+    reg_col_names_f = list(df_f.columns)
+    df_f.loc['const', 'inverse_logit_incl_base'] = inverse_logit(sum([df_f.loc[k, 'params'] * v for k, v in coef_const_vals_f.items()]))
+    df_f.loc['const', 'increase_prob_from_base'] = df_f.loc['const', 'inverse_logit_incl_base']
+    for label in df_f.index:
+        if label != 'const':
+            df_f.loc[label, 'inverse_logit_incl_base'] = inverse_logit(sum([df_f.loc[k, 'params'] * v for k, v in coef_const_vals_f.items()]) + df_f.loc[label, 'params'])
+            df_f.loc[label, 'increase_prob_from_base'] = df_f.loc['const', 'inverse_logit_incl_base'] - df_f.loc[label, 'inverse_logit_incl_base']
+
+    label_order_f = ['const'] + [x for x in df_f.index if (x.find(' * ') == -1) & (x != 'const')] + [x for x in df_f.index if x.find(' * ') > -1]
+    return df_f.loc[label_order_f, reg_col_names_f + ['increase_prob_from_base', 'inverse_logit_incl_base']]
+
 
 # ----- LOAD DATA -----
 with open("python_hand_data.pickle", 'rb') as f:
@@ -314,293 +356,43 @@ print_df_summary(df_master, return_player_summary_f=False)
 # ----- HYPOTHESIS TESTING -----
 df_data_summary = create_formatted_output(df_master, cases_f=['zero_outcome_previous_TF',
                                                               'loss_outcome_previous_TF', 'win_outcome_previous_TF',
+                                                              'zero_or_blind_only_outcome_previous_TF',
                                                               'loss_outcome_xonlyblind_previous_TF',
                                                               'win_outcome_xonlyblind_previous_TF',
-                                                              'blind_only_outcome_previous_TF',
-                                                              'zero_or_blind_only_outcome_previous_TF'
+                                                              'blind_only_outcome_previous_TF'
                                                               ])
-df_data_summary = run_within_hypothesis_tests(df_data_summary, n_sides_f=2,
-                                              baseline_name_f='zero_outcome_previous_TF',
-                                              test_case_names_f=['loss_outcome_previous_TF', 'win_outcome_previous_TF',
-                                                                 'zero_outcome_previous_TF', 'blind_only_outcome_previous_TF',
-                                                                 'zero_or_blind_only_outcome_previous_TF',
-                                                                 'loss_outcome_xonlyblind_previous_TF',
-                                                                 'win_outcome_xonlyblind_previous_TF'],
+hyp_test_specs = {'test_1': {'baseline': 'zero_outcome_previous_TF',
+                             'test_cases': ['loss_outcome_previous_TF', 'win_outcome_previous_TF']},
+                  'test_2': {'baseline': 'zero_or_blind_only_outcome_previous_TF',
+                             'test_cases': ['loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF']}}
+for specs in hyp_test_specs.values():
+    df_data_summary = run_within_hypothesis_tests(df_data_summary, n_sides_f=2,
+                                              baseline_name_f=specs['baseline'],
+                                              test_case_names_f=specs['test_cases'],
                                               player_names_f=['human', 'ADM'])
 
-df_data_summary.to_csv('data_summary.csv')
+# df_data_summary.to_csv('data_summary.csv')
 
 # ----- SPECIFY MODEL PARAMS ----
 endog_var_name = 'preflop_fold_TF'
-add_constant = False
-exog_var_name = ['player', 'outcome_previous_cat']
-ordinal_vars = ['slansky', 'seat_map', 'stack_rank']
+add_constant = True
+exog_var_name = []    # 'player', 'loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF',
+ordinal_vars = ['slansky', 'seat_map']    # 'seat_map': seat_map reassigns the first seat to the player sitting in seat 3; this is to allow for ordinal varaibles to account for nonlinearity in seats 1 and 2 as a result of blinds
 bool_vars = {}
-categorical_drop_vals = {} #{'player': 'Pluribus', 'seat': '6'}  # {'player': 'Bill'}
-interaction_vars = [('outcome_previous_loss_TF', 'player'), ('outcome_previous_win_TF', 'player')]   #[('outcome_previous_loss_TF', 'player')]
+categorical_drop_vals = {'seat': '3', 'stack_rank': '1'}    # 'player': 'Pluribus',
+interaction_vars = [('loss_outcome_xonlyblind_previous_TF', 'human_player_TF'), ('win_outcome_xonlyblind_previous_TF', 'human_player_TF')]   # ('loss_outcome_xonlyblind_previous_TF', 'player'), ('win_outcome_xonlyblind_previous_TF', 'player')
+scale_vars_list = ['start_stack']
 
 # filter and map
 df_data = df_master.reindex()
 df_data['seat_map'] = df_data['seat'].map({'1': '5', '2': '6', '3': '1', '4': '2', '5': '3', '6': '4'})
 
-test = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_data,
-                          add_constant_f=add_constant,
-                          convert_ord_list_f=ordinal_vars, convert_bool_dict_f=bool_vars,
-                          cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
-test.estimate_model()
+logistic_model = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_data,
+                                    add_constant_f=add_constant, scale_vars_list_f=scale_vars_list,
+                                    convert_ord_list_f=ordinal_vars, convert_bool_dict_f=bool_vars,
+                                    cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
+logistic_model.estimate_model()
 
-#--------- SCRATCH CODE ------
-df_master.loc[((df_master.outcome > -5000) & (df_master.outcome < -150)) | ((df_master.outcome > 150) & (df_master.outcome < 5000)), 'outcome'].hist()
+df_coef_output = format_logistic_regression_output(logistic_model)
 
-test.__dict__.keys()
-
-num_min_hands = 10000
-g_num_min_hands = None
-for g in games.values():
-    num_min_hands = min(num_min_hands, len(g.hands))
-    g_num_min_hands = g.number if len(g.hands) == num_min_hands else g_num_min_hands
-
-buy_in = 10000
-select_g_num = '74'
-num_random = 5
-import random
-for select_g_num in random.sample(list(games.keys()), num_random) + [g_num_min_hands]:
-    df_player_stack = pd.DataFrame(columns=list(games[select_g_num].players), index=list(games[select_g_num].hands.keys()))
-    for h_num, h in games[select_g_num].hands.items():
-        df_player_stack.loc[h_num] = dict([(k, v+buy_in) for k, v in h.start_stack.items()])
-    df_player_stack.loc[str(int(df_player_stack.index[-1]) + 1)] = dict([(p, h.start_stack[p] + buy_in + h.outcomes[p]) for p in h.start_stack.keys()])
-    df_player_stack.plot(title=('Game %s start stacks.\nEnd amount of money on table: %3.1f' % (select_g_num, df_player_stack.iloc[-1, :].sum()))).set_xlabel('hand_num')
-
-import matplotlib.pyplot as plt
-
-# ----- RESEARCH -----
-# QUESTION : within game, what is the proportion of preflop folds following losing hand vs not losing hand? (discount hands where player is blind)
-# ----- define research question specific functions -----
-# def create_player_df(player_f):
-#     def calc_hand_shift_vars(df_ff, shift_var_name_ff):
-#         # check to make sure all hands in range are continguous (no missing hands in middle of string)
-#         t_df_ff = df_ff[['hand', shift_var_name_ff]].sort_values(by='hand', ascending=True).reindex()
-#         if all((df_ff['hand'] - df_ff['hand'].shift(1))[1:] == 1):
-#             t_df_ff['prev_' + shift_var_name_ff] = t_df_ff[shift_var_name_ff].shift(1)
-#         else:
-#             t_df_ff['prev_' + shift_var_name_ff] = None
-#         return t_df_ff.drop(columns=[shift_var_name_ff])
-#
-#     t_records = list()
-#     for t_g_num in player_f.game_numbers:
-#         g = games[t_g_num]
-#         for h_num in range(g.start_hand, g.end_hand):
-#             try:
-#                 t_records.append({'player': player_f.name, 'game': int(t_g_num), 'hand': h_num,
-#                                   'preflop_action': player_f.actions[t_g_num][str(h_num)]['preflop'],
-#                                   'outcome': player_f.outcomes[t_g_num][str(h_num)],
-#                                   'big_blind': player_f.blinds[t_g_num][str(h_num)]['big'],
-#                                   'small_blind': player_f.blinds[t_g_num][str(h_num)]['small'],
-#                                   'hole_cards': player_f.cards[t_g_num][str(h_num)],
-#                                   'premium_hole': player_f.odds[t_g_num][str(h_num)]['both_hole_premium_cards'],
-#                                   'chen_rank': player_f.odds[t_g_num][str(h_num)]['chen'],
-#                                   'slansky_rank': player_f.odds[t_g_num][str(h_num)]['slansky'],
-#                                   'start_stack': player_f.stacks[t_g_num][str(h_num)],
-#                                   'start_stack_rank': player_f.stack_ranks[t_g_num][str(h_num)],
-#                                   'seat_numbers': player_f.seat_numbers[t_g_num][str(h_num)]
-#                                   })
-#             except KeyError:
-#                 pass
-#
-#     df_f = pd.DataFrame(data=t_records).sort_values(by=['game', 'hand'], ascending=True)
-#
-#     # temp df of shift variables
-#     t_df_f = df_f.groupby('game').apply(calc_hand_shift_vars, shift_var_name_ff='outcome').reset_index()
-#     t_df_f.drop(columns=['level_1'], inplace=True)
-#     df_f = df_f.merge(t_df_f, how='left', on=['game', 'hand'])
-#
-#     return df_f
-#
-#
-# def create_base_df_wrapper(players_f):
-#     df = pd.DataFrame()
-#     for p in players_f:
-#         df = pd.concat([df, create_player_df(p)], axis=0, ignore_index=True)
-#     del p
-#
-#     # sanity check on games / hands
-#     print('\n\n===== Sanity check dataframe =====')
-#     print('Total number of games: %d' % df.game.nunique())
-#     print('%d players in data set: %s' % (len(df.player.unique()), df.player.unique()))
-#     print('Min number of hands per game: %d' % df.groupby('game').hand.nunique().min())
-#     print('Max number of hands per game: %d' % df.groupby('game').hand.nunique().max())
-#     print('Min number of unique players in a hand across all games: %d' % df.groupby(
-#         ['game', 'hand']).player.nunique().min())
-#     print('Max number of unique players in a hand across all games: %d' % df.groupby(
-#         ['game', 'hand']).player.nunique().max())
-#     print('Median number of unique players in a hand across all games: %d' % df.groupby(
-#         ['game', 'hand']).player.nunique().median())
-#     if not all(df.groupby(['game', 'hand']).apply(
-#             lambda x: (x['small_blind'].sum() == 1) and (x['big_blind'].sum() == 1))):
-#         print('WARNING: some blinds unaccounted for, check dataframe for missing info')
-#
-#     # check that stack calculation makes sense
-#     df_player_game_stack_check = df.sort_values(['player', 'game', 'hand'], ascending=True).groupby(
-#         ['player', 'game']).apply(start_end_stack_comp)
-#     if df_player_game_stack_check.sum() != 0:
-#         print('WARNING: Check creation of data frame, cumulative stack and outcome calculations do not tie.'
-#               '\n\tSee: df_player_game_stack_check_sum')
-#
-#     # add additional features
-#     df['prev_outcome_loss'] = (df.prev_outcome < 0)
-#     df['preflop_fold'] = (df['preflop_action'] == 'f')
-#     df['relative_start_stack'] = df['start_stack'] / df.groupby(['game', 'hand'])['start_stack'].transform('max')
-#     df['rank_start_stack'] = df.groupby(['game', 'hand'])['start_stack'].rank(method='max', ascending=False)
-#     df['any_blind'] = (df['small_blind'] | df['big_blind'])
-#     df['bot_TF'] = (df['player'] == 'Pluribus')
-#
-#     if df.groupby(['game', 'hand']).rank_start_stack.max().min() != 6:
-#         print('WARNING: stack rankings within game and hand do not always range from 1 to 6. Check data frame.')
-#
-#     return df
-#
-#
-# def behavior_test(df_f, success_field_name_f, sample_partition_field_name_f):
-#     in_sample1_f = df_f[sample_partition_field_name_f]
-#     in_sample2_f = ~df_f[sample_partition_field_name_f]
-#     success_f = df_f[success_field_name_f]
-#     n_sample1 = sum(in_sample1_f)
-#     n_sample2 = sum(in_sample2_f)
-#     n_sample1_success = sum(in_sample1_f & success_f)
-#     n_sample2_success = sum(in_sample2_f & success_f)
-#     t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success,
-#                                                 n1=n_sample1, n2=n_sample2)
-#     return {'p1': t_p1, 'n1': n_sample1, 'p2': t_p2, 'n2': n_sample2, 'z': t_z, 'pval': t_p}
-#
-#
-# def start_end_stack_comp(df_f):
-#     return np.nansum(df_f['start_stack'] + df_f['outcome'] - df_f['start_stack'].shift(-1))
-
-#
-# # --- Create dataframe of all player data
-# df = create_base_df_wrapper(players)
-#
-# # --- Conduct hypothesis test
-# # Exclude select observations rows
-# excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
-# excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
-# excl_cond3 = df.prev_outcome_loss.isnull()  # first hand of game
-# excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
-# use_ind = df.loc[~(excl_cond1 | excl_cond2 | excl_cond3 | excl_cond4)].index
-# df_calc = df.loc[use_ind].reindex()
-# del use_ind
-#
-# # Calculate test stats
-# sample_partition_binary_field = 'prev_outcome_loss'
-# success_event_binary_field = 'preflop_fold'
-# t_df = df_calc.groupby('player').apply(behavior_test, success_field_name_f=success_event_binary_field,
-#                                        sample_partition_field_name_f=sample_partition_binary_field)
-# df_prop_test = pd.DataFrame(list(t_df))
-# df_prop_test['player'] = t_df.index
-# del t_df
-#
-# print("Partitioning samples on %s and success event = '%s'." % (
-# sample_partition_binary_field, success_event_binary_field))
-# print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % (sample_partition_binary_field))
-# print(df_prop_test)
-#
-# # --- Logistic regression to incorporate stack size and previous loss
-# # df = create_base_df_wrapper(players)    ########
-#
-# # create training data
-# X_col_name = ['any_blind', 'slansky_rank', 'rank_start_stack', 'seat_numbers']     # 'any_blind', 'prev_outcome_loss', 'slansky_rank', 'rank_start_stack', 'bot_TF'; chen_rank, slansky_rank, premium_hole
-# y_col_name = ['preflop_fold']
-#
-# dummy_vars = {'player': 'Pluribus'}  # {'player': 'Pluribus'} base field name: value to drop for identification; if value is None, then no dummies are dropped
-#
-# # interaction_vars = {}
-# # interaction_vars = {'loss_bot': {'var1name': 'prev_outcome_loss', 'var2name': 'bot_TF'}}
-# interaction_vars = dict()
-# [interaction_vars.update({'loss_' + p: {'var1name': 'prev_outcome_loss', 'var2name': p}}) for p in df.player.unique() if p != 'Pluribus']
-#
-# add_const = False
-#
-# df_logistic = df.reindex()
-# print('Base regression data set has %d observations and %d columns' % df_logistic.shape)
-#
-# # process dummy vars
-# if len(dummy_vars) > 0:
-#     t_df = pd.DataFrame()
-#     for t_name, t_excl in dummy_vars.items():
-#         t_df_dummies = pd.get_dummies(df_logistic[t_name])
-#         t_df = pd.concat([t_df, t_df_dummies], axis=1).drop(columns=t_excl if t_excl is not None else t_df_dummies.columns[0])
-#         del t_df_dummies
-#     del t_name, t_excl
-#     df_logistic = pd.concat([df_logistic, t_df], axis=1)
-#     X_col_name = X_col_name + list(t_df.columns)
-#     del t_df
-#     print('After adding dummies, regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
-#
-# # process interaction terms
-# if len(interaction_vars) > 0:
-#     t_df = pd.DataFrame()
-#     for t_name, t_vars in interaction_vars.items():
-#         t_df[t_name] = df_logistic.loc[:, t_vars['var1name']].astype(float) * df_logistic.loc[:, t_vars['var2name']].astype(float)
-#     del t_name, t_vars
-#     df_logistic = pd.concat([df_logistic, t_df], axis=1)
-#     X_col_name = X_col_name + list(t_df.columns)
-#     del t_df
-#     print('After adding interaction terms regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
-#
-# # drop bad rows for regression
-# df_logistic = df_logistic[X_col_name + y_col_name].dropna().reindex()
-# print('After dropping rows with null, %d observations and %d columns (incl. dependent) remain' % df_logistic.shape)
-#
-# if add_const:
-#     sm_result = sm.Logit(endog=df_logistic[y_col_name],
-#                          exog=sm.add_constant(df_logistic[X_col_name]).astype(float)).fit()
-# else:
-#     sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=df_logistic[X_col_name].astype(float)).fit()
-# print(sm_result.summary2())
-#
-# # print('Aggregate player specific effects: player dummy plus player * prev hand loss')
-# # for p in df.player.unique():
-# #     try:
-# #         print('%s: %3.1f' % (p, sm_result.params[p] + sm_result.params['loss_' + p]))
-# #     except KeyError:
-# #         pass
-#
-#
-# # ---- Comparison of traditional player style metrics -----
-# def get_select_hands(df_f, true_cond_cols_f):
-#     t_index = [True] * df_f.shape[0]
-#     # filter dataframe to only include select sub-population based on condition columns
-#     for t_col, t_cond in true_cond_cols_f.items():
-#         t_index = (t_index & (df_f[t_col] == t_cond))
-#     t_df = df_f.loc[t_index]
-#
-#     # retrieve games and hands for sub-population
-#     select_hands_dict_f = dict()
-#     for t_g_num in t_df['game'].unique():
-#         select_hands_dict_f.update({str(t_g_num): [str(x) for x in t_df.loc[t_df['game'] == t_g_num, 'hand'].unique()]})
-#     return select_hands_dict_f
-#
-#
-# looseness_comp = dict()
-# for p in players:
-#     # excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
-#     # excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
-#     # excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
-#     t_select_hands_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': True, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
-#     t_select_hands_no_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': False, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
-#
-#     _, n1_success, n1 = p.calc_looseness(t_select_hands_prev_loss)
-#     _, n2_success, n2 = p.calc_looseness(t_select_hands_no_prev_loss)
-#     t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success, n2_success, n1, n2)
-#     looseness_comp.update({p.name: {'p1': t_p1, 'n1': n1_success, 'p2': t_p2, 'n2': n2_success, 'z': t_z, 'pval': t_p}})
-#
-#     del p, t_p1, t_p2, t_z, t_p, n1_success, n1, n2_success, n2, t_select_hands_no_prev_loss, t_select_hands_prev_loss
-#
-# print("Partitioning samples on %s and success event = '%s'." % ('prev_outcome_loss', 'voluntarily played hand (looseness)'))
-# print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome_loss'))
-# print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
-#
-#
-# # import pickle
-# # with open("python_hand_data.pickle", 'wb') as f:
-# #     pickle.dump({'players': players, 'games': games, 'df': df}, f)
+# df_coef_output.to_csv('logistic_regression_output.csv')
