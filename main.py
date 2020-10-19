@@ -97,6 +97,7 @@ _, _, _, _ = meta_game_stats(games)
 print("\nCombining games with 'b' appended to filename\n")
 games_b = [x for x in games.keys() if x.find('b') > -1]
 for g1, g2 in zip([x.split('b')[0] for x in games_b], games_b):
+    print('For pair %s and %s, %s missing %s and %s missing %s' % (g1, g2, g1, games[g2].players - games[g1].players, g2, games[g1].players - games[g2].players))
     games[g1].combine_games(games[g2], print_f=False)
     games.pop(g2)
 del g1, g2, games_b
@@ -107,6 +108,11 @@ _, _, _, _ = meta_game_stats(games)
 print("\nDropping band hands from games\n")
 _ = [g.drop_bad_hands() for g in games.values()]
 
+_, _, _, _ = meta_game_stats(games)
+
+# ----- map player names which appear to be mis-labeled across files that were combined above
+for _, g in games.items():
+    g.map_players()
 _, _, _, _ = meta_game_stats(games)
 
 # ----- parse by player -----
@@ -123,203 +129,7 @@ for p_name in all_players:
     del p
 del p_name
 
-
-# ----- RESEARCH -----
-# QUESTION : within game, what is the proportion of preflop folds following losing hand vs not losing hand? (discount hands where player is blind)
-# ----- define research question specific functions -----
-def create_player_df(player_f):
-    def calc_hand_shift_vars(df_ff, shift_var_name_ff):
-        # check to make sure all hands in range are continguous (no missing hands in middle of string)
-        t_df_ff = df_ff[['hand', shift_var_name_ff]].sort_values(by='hand', ascending=True).reindex()
-        if all((df_ff['hand'] - df_ff['hand'].shift(1))[1:] == 1):
-            t_df_ff['prev_' + shift_var_name_ff] = t_df_ff[shift_var_name_ff].shift(1)
-        else:
-            t_df_ff['prev_' + shift_var_name_ff] = None
-        return t_df_ff.drop(columns=[shift_var_name_ff])
-
-    t_records = list()
-    for t_g_num in player_f.game_numbers:
-        g = games[t_g_num]
-        for h_num in range(g.start_hand, g.end_hand):
-            try:
-                t_records.append({'player': player_f.name, 'game': int(t_g_num), 'hand': h_num,
-                                  'preflop_action': player_f.actions[t_g_num][str(h_num)]['preflop'],
-                                  'outcome': player_f.outcomes[t_g_num][str(h_num)],
-                                  'big_blind': player_f.blinds[t_g_num][str(h_num)]['big'],
-                                  'small_blind': player_f.blinds[t_g_num][str(h_num)]['small'],
-                                  'hole_cards': player_f.cards[t_g_num][str(h_num)],
-                                  'premium_hole': player_f.odds[t_g_num][str(h_num)]['both_hole_premium_cards'],
-                                  'chen_rank': player_f.odds[t_g_num][str(h_num)]['chen'],
-                                  'slansky_rank': player_f.odds[t_g_num][str(h_num)]['slansky'],
-                                  'start_stack': player_f.stacks[t_g_num][str(h_num)]
-                                  })
-            except KeyError:
-                pass
-
-    df_f = pd.DataFrame(data=t_records).sort_values(by=['game', 'hand'], ascending=True)
-
-    # temp df of shift variables
-    t_df_f = df_f.groupby('game').apply(calc_hand_shift_vars, shift_var_name_ff='outcome').reset_index()
-    t_df_f.drop(columns=['level_1'], inplace=True)
-    df_f = df_f.merge(t_df_f, how='left', on=['game', 'hand'])
-
-    return df_f
-
-
-def create_base_df_wrapper(players_f):
-    df = pd.DataFrame()
-    for p in players_f:
-        df = pd.concat([df, create_player_df(p)], axis=0, ignore_index=True)
-    del p
-
-    # sanity check on games / hands
-    print('\n\n===== Sanity check dataframe =====')
-    print('Total number of games: %d' % df.game.nunique())
-    print('%d players in data set: %s' % (len(df.player.unique()), df.player.unique()))
-    print('Min number of hands per game: %d' % df.groupby('game').hand.nunique().min())
-    print('Max number of hands per game: %d' % df.groupby('game').hand.nunique().max())
-    print('Min number of unique players in a hand across all games: %d' % df.groupby(
-        ['game', 'hand']).player.nunique().min())
-    print('Max number of unique players in a hand across all games: %d' % df.groupby(
-        ['game', 'hand']).player.nunique().max())
-    print('Median number of unique players in a hand across all games: %d' % df.groupby(
-        ['game', 'hand']).player.nunique().median())
-    if not all(df.groupby(['game', 'hand']).apply(
-            lambda x: (x['small_blind'].sum() == 1) and (x['big_blind'].sum() == 1))):
-        print('WARNING: some blinds unaccounted for, check dataframe for missing info')
-
-    # check that stack calculation makes sense
-    df_player_game_stack_check = df.sort_values(['player', 'game', 'hand'], ascending=True).groupby(
-        ['player', 'game']).apply(start_end_stack_comp)
-    if df_player_game_stack_check.sum() != 0:
-        print('WARNING: Check creation of data frame, cumulative stack and outcome calculations do not tie.'
-              '\n\tSee: df_player_game_stack_check_sum')
-
-    # add additional features
-    df['prev_outcome_loss'] = df.prev_outcome < 0
-    df['preflop_fold'] = df['preflop_action'] == 'f'
-    df['relative_start_stack'] = df['start_stack'] / df.groupby(['game', 'hand'])['start_stack'].transform('max')
-    df['rank_start_stack'] = df.groupby(['game', 'hand'])['start_stack'].rank(method='max', ascending=False)
-    df['any_blind'] = df['small_blind'] | df['big_blind']
-
-    if df.groupby(['game', 'hand']).rank_start_stack.max().min() != 6:
-        print('WARNING: stack rankings within game and hand do not always range from 1 to 6. Check data frame.')
-
-    return df
-
-
-def behavior_test(df_f, success_field_name_f, sample_partition_field_name_f):
-    in_sample1_f = df_f[sample_partition_field_name_f]
-    in_sample2_f = ~df_f[sample_partition_field_name_f]
-    success_f = df_f[success_field_name_f]
-    n_sample1 = sum(in_sample1_f)
-    n_sample2 = sum(in_sample2_f)
-    n_sample1_success = sum(in_sample1_f & success_f)
-    n_sample2_success = sum(in_sample2_f & success_f)
-    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success=n_sample1_success, n2_success=n_sample2_success,
-                                                n1=n_sample1, n2=n_sample2)
-    return {'p1': t_p1, 'n1': n_sample1, 'p2': t_p2, 'n2': n_sample2, 'z': t_z, 'pval': t_p}
-
-
-def start_end_stack_comp(df_f):
-    return np.nansum(df_f['start_stack'] + df_f['outcome'] - df_f['start_stack'].shift(-1))
-
-
-# --- Create dataframe of all player data
-df = create_base_df_wrapper(players)
-
-# --- Conduct hypothesis test
-# Exclude select observations rows
-excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
-excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
-excl_cond3 = df.prev_outcome_loss.isnull()  # first hand of game
-excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
-use_ind = df.loc[~(excl_cond1 | excl_cond2 | excl_cond3 | excl_cond4)].index
-df_calc = df.loc[use_ind].reindex()
-del use_ind
-
-# Calculate test stats
-sample_partition_binary_field = 'prev_outcome_loss'
-success_event_binary_field = 'preflop_fold'
-t_df = df_calc.groupby('player').apply(behavior_test, success_field_name_f=success_event_binary_field,
-                                       sample_partition_field_name_f=sample_partition_binary_field)
-df_prop_test = pd.DataFrame(list(t_df))
-df_prop_test['player'] = t_df.index
-del t_df
-
-print("Partitioning samples on %s and success event = '%s'." % (
-sample_partition_binary_field, success_event_binary_field))
-print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % (sample_partition_binary_field))
-print(df_prop_test)
-
-# --- Logistic regression to incorporate stack size and previous loss
-# df = create_base_df_wrapper(players)    ########
-
-# create training data
-X_col_name = ['any_blind', 'prev_outcome_loss', 'slansky_rank', 'rank_start_stack']     # chen_rank, slansky_rank, premium_hole
-y_col_name = ['preflop_fold']
-dummy_vars = {'player': 'Pluribus'}  # base field name: value to drop for identification; if value is None, then no dummies are dropped
-add_const = False
-
-# process dummy vars
-if len(dummy_vars) > 0:
-    df_logistic = df[X_col_name + list(dummy_vars.keys()) + y_col_name].dropna().reindex()
-    for t_name, t_excl in dummy_vars.items():
-        t_df_dummies = pd.get_dummies(df_logistic[t_name])
-        if t_excl is not None:
-            t_cols_to_drop = [t_name, t_excl]
-        else:
-            t_cols_to_drop = [t_name]
-        del t_excl, t_name
-        df_logistic = pd.concat([df_logistic, t_df_dummies], axis=1).drop(columns=t_cols_to_drop)
-        X_col_name = [x for x in df_logistic.columns if x != y_col_name[0]]
-        del t_cols_to_drop, t_df_dummies
-else:
-    df_logistic = df[X_col_name + y_col_name].dropna().reindex()
-print('Regression data frame has %d observations and %d variables (incl. dependent)' % df_logistic.shape)
-
-if add_const:
-    sm_result = sm.Logit(endog=df_logistic[y_col_name],
-                         exog=sm.add_constant(df_logistic[X_col_name]).astype(float)).fit()
-else:
-    sm_result = sm.Logit(endog=df_logistic[y_col_name], exog=df_logistic[X_col_name].astype(float)).fit()
-print(sm_result.summary2())
-
-
-# ---- Comparison of traditional player style metrics -----
-def get_select_hands(df_f, true_cond_cols_f):
-    t_index = [True] * df_f.shape[0]
-    # filter dataframe to only include select sub-population based on condition columns
-    for t_col, t_cond in true_cond_cols_f.items():
-        t_index = (t_index & (df_f[t_col] == t_cond))
-    t_df = df_f.loc[t_index]
-
-    # retrieve games and hands for sub-population
-    select_hands_dict_f = dict()
-    for t_g_num in t_df['game'].unique():
-        select_hands_dict_f.update({str(t_g_num): [str(x) for x in t_df.loc[t_df['game'] == t_g_num, 'hand'].unique()]})
-    return select_hands_dict_f
-
-
-looseness_comp = dict()
-for p in players:
-    # excl_cond1 = df.small_blind  # less likely to fold if already have money in the pot
-    # excl_cond2 = df.big_blind  # less likely to fold if already have money in the pot
-    # excl_cond4 = df.premium_hole  # got lucky with good hole cards no one folds
-    t_select_hands_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': True, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
-    t_select_hands_no_prev_loss = get_select_hands(df.loc[df.player == p.name], true_cond_cols_f={'prev_outcome_loss': False, 'small_blind': False, 'big_blind': False, 'premium_hole': False})
-
-    _, n1_success, n1 = p.calc_looseness(t_select_hands_prev_loss)
-    _, n2_success, n2 = p.calc_looseness(t_select_hands_no_prev_loss)
-    t_p1, t_p2, t_z, t_p = prop_2samp_ind_large(n1_success, n2_success, n1, n2)
-    looseness_comp.update({p.name: {'p1': t_p1, 'n1': n1_success, 'p2': t_p2, 'n2': n2_success, 'z': t_z, 'pval': t_p}})
-
-    del p, t_p1, t_p2, t_z, t_p, n1_success, n1, n2_success, n2, t_select_hands_no_prev_loss, t_select_hands_prev_loss
-
-print("Partitioning samples on %s and success event = '%s'." % ('prev_outcome_loss', 'voluntarily played hand (looseness)'))
-print("Test statistic z = (p1 - p2)/stdev and p1 is %s is True" % ('prev_outcome_loss'))
-print(pd.DataFrame.from_dict(looseness_comp, orient='index'))
-
+# ----- save data -----
 # import pickle
 # with open("python_hand_data.pickle", 'wb') as f:
-#     pickle.dump({'players': players, 'games': games, 'df': df}, f)
+#     pickle.dump({'players': players, 'games': games}, f)

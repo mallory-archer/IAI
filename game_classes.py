@@ -1,5 +1,6 @@
 import json
-from odds_functions import slansky_strength, chen_strength
+from odds_functions import slansky_strength, chen_strength, exp_val_implied_prob, est_prob_slansky
+from scipy.stats import rankdata
 
 
 class Hand:
@@ -15,6 +16,8 @@ class Hand:
         self.outcomes = self.get_outcomes()
         self.missing_fields = list()
         self.start_stack = None  # calculated in Game object because it is based on change log of previous hands
+        self.start_stack_rank = None  # calculated in Game object because it is based on start_stack, which is change log of previous hands
+        self.relative_start_stack = None
 
         # check for initialization of select attributes
         self.check_player_completeness()
@@ -44,11 +47,12 @@ class Hand:
     def get_cards(self):
         try:
             t_all_cards = self.hand_data.split(':')[3].split('|')
-            if len(t_all_cards) > len(self.players):
+            if len(t_all_cards[-1]) > 4:
                 t_board_cards = t_all_cards[-1].split('/')
-                t_hole_cards = t_all_cards[:-1] + [
-                    t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
-                return {'hole_cards': dict(zip(self.players, t_hole_cards)), 'board_cards': t_board_cards}
+                t_hole_cards = t_all_cards[:-1] + [t_board_cards.pop(0)]  # last set of hole cards splits to board because of "/" "|" convention
+                t_cards = {'hole_cards': dict(zip(self.players, t_hole_cards))}
+                t_cards.update(dict(zip(['flop', 'turn', 'river'][0:len(t_board_cards)], t_board_cards)))  # ,   'board_cards': t_board_cards}
+                return t_cards
             else:
                 t_hole_cards = t_all_cards
                 return {'hole_cards': dict(zip(self.players, t_hole_cards))}
@@ -56,7 +60,6 @@ class Hand:
             return None
 
     def get_odds(self):
-        # simplistic proxy - could be refined
         try:
             t_cards = self.cards['hole_cards']
             premium_cards_f = {'A', 'K', 'Q', 'J'}
@@ -78,6 +81,16 @@ class Hand:
                     t_dict.update({'slansky': slansky_strength(v[0:4])})
                 except:
                     pass
+                # try:
+                #     # get implied prob of winning from expected values observed on online poker website
+                #     t_dict.update({'online_prob': exp_val_implied_prob(v[0:4])})
+                # except:
+                #     pass
+                # try:
+                #     # get implied prob of winning derived from this data set, slansky ranks, and hand outcomes
+                #     t_dict.update({'slansky_prob': est_prob_slansky(slansky_strength(v[0:4]), slansky_prob_dict)})
+                # except:
+                #     pass
 
                 if len(t_dict) > 0:
                     odds_dict_f.update({k: t_dict})
@@ -120,6 +133,17 @@ class Hand:
         except IndexError:
             return None
 
+    def map_players(self, name_map):
+        for old, new in name_map.items():
+            self.players = [new if x == old else x for x in self.players]
+            self.small_blind = new if self.small_blind == old else self.small_blind
+            self.big_blind = new if self.big_blind == old else self.big_blind
+            self.cards['hole_cards'] = dict(zip([new if x == old else x for x in list(self.cards['hole_cards'].keys())], list(self.cards['hole_cards'].values())))
+            self.odds = dict(zip([new if x == old else x for x in list(self.odds.keys())], list(self.odds.values())))
+            for a in self.actions.keys():
+                self.actions[a] = dict(zip([new if x == old else x for x in list(self.actions[a].keys())], list(self.actions[a].values())))
+            self.outcomes = dict(zip([new if x == old else x for x in list(self.outcomes.keys())], list(self.outcomes.values())))
+
     def check_player_completeness(self, check_atts_ff=None):
         try:
             if check_atts_ff is None:
@@ -158,6 +182,7 @@ class Game:
 
         self.combine_game_add = None
         self.combine_player_diff = None
+        self.name_map = None
 
         self.summarize_hands()
 
@@ -184,6 +209,7 @@ class Game:
         return [y - 1 for x, y in zip(t_f, t_f[1:]) if y - x != 1]
 
     def parse_players(self):
+        self.players = set()
         for _, x in self.hands.items():
             if x.number is not None:
                 self.players.update(x.players)
@@ -194,6 +220,8 @@ class Game:
         else:
             self.hands[str(self.start_hand)].start_stack = dict(
                 zip(self.players, [0] * len(self.players)))  # stack at beginning of game (all players set at 0)
+            self.hands[str(self.start_hand)].start_stack_rank = dict(
+                zip(self.hands[str(self.start_hand)].start_stack.keys(), rankdata([-i for i in self.hands[str(self.start_hand)].start_stack.values()], method='max')))  # account for shifted loop iteration
             for t_h_num in range(int(self.start_hand) + 1, int(self.end_hand) + 1):
                 self.hands[str(t_h_num)].start_stack = self.hands[
                     str(t_h_num - 1)].start_stack.copy()  # initialize stack dictionary for hand
@@ -208,6 +236,13 @@ class Game:
                             t_p]  # add stack at beginning of previous hand + outcome of previous hand
                     except KeyError:
                         pass
+
+                # get rankings of stacks based on relative stack sizes
+                self.hands[str(t_h_num)].start_stack_rank = dict(zip(self.hands[str(t_h_num)].start_stack.keys(), rankdata([-i for i in self.hands[str(t_h_num)].start_stack.values()], method='max')))
+
+                # get relative start stack size in terms of first person's stack
+
+                self.hands[str(t_h_num)].relative_start_stack = dict([(p, self.hands[str(t_h_num)].start_stack[p] / self.hands[str(t_h_num)].start_stack[min(self.hands[str(t_h_num)].start_stack_rank, key=self.hands[str(t_h_num)].start_stack_rank.get)]) for p in self.hands[str(t_h_num)].start_stack_rank.keys()])
 
             # add total game outcome to game object
             self.final_outcome = self.hands[str(self.end_hand)].start_stack.copy()
@@ -229,16 +264,59 @@ class Game:
         self.error_hands = self.get_error_hands()
 
     def combine_games(self, game2, print_f=True):
+        def get_next_player_in_seat(seat_num_current, hand_next):
+            return hand_next.players[seat_num_current]
+
+        def get_anticipated_player_in_seat(seat_num_current, hand_current):
+            return hand_current.players[(seat_num_current + 1) % 6]
+
+        def map_name_change(hand_current, hand_next):
+            t_hand_name_changes = dict()
+            for i in range(0, len(hand_current.players)):
+                t_actual = get_next_player_in_seat(i, hand_next)
+                t_anticipated = get_anticipated_player_in_seat(i, hand_current)
+                if t_actual != t_anticipated:
+                    t_hand_name_changes.update({t_actual: t_anticipated})
+            return t_hand_name_changes
+
         self.combine_game_add = game2.number
-        combine_player_set_diff_f = self.players - game2.players
+        combine_player_set_diff_f = (self.players - game2.players).union(game2.players - self.players)
         if len(combine_player_set_diff_f) > 0:
             self.combine_player_diff = combine_player_set_diff_f
+
+            # try-except in case filename convention is reversed / check that assumed next hand is sequentially numbered
+            last_hand_first_file = min(max([int(x) for x in self.hands.keys() if x is not None]), max([int(x) for x in game2.hands.keys() if x is not None]))
+            try:
+                h_end_first = self.hands[str(last_hand_first_file)]
+                h_begin_second = game2.hands[str(last_hand_first_file + 1)]
+                self.name_map = map_name_change(h_end_first, h_begin_second)
+            except KeyError:
+                try:
+                    h_end_first = game2.hands[str(last_hand_first_file)]
+                    h_begin_second = self.hands[str(last_hand_first_file + 1)]
+                    self.name_map = map_name_change(h_end_first, h_begin_second)
+                except KeyError:
+                    pass
+
             if print_f:
                 print("WARNING: Different players for combined games %s and %s" % (self.number, game2.number))
                 print("Difference: %s" % self.combine_player_diff)
+                print("Proposed map: %s" % self.name_map)
 
         self.hands.update(game2.hands)
         self.summarize_hands()
+
+    def map_players(self):
+        for _, h in self.hands.items():
+            if self.name_map is not None:
+                h.map_players(self.name_map)
+        self.parse_players()
+        self.get_stack_sizes()
+        # call parse_players after hands have been updated to get new list of players observe din hands
+        # call get_stack_sizes after hands have been updated to get final outcomes
+        # self.start_stack = None  # calculated in Game object because it is based on change log of previous hands
+        # self.start_stack_rank = None  # calculated in Game object because it is based on start_stack, which is change log of previous hands
+        return None
 
     def drop_bad_hands(self, hand_num_null_TF=True):
         t_num_hands_dropped = 0
@@ -273,15 +351,30 @@ class Player:
     def __init__(self, name=None):
         self.name = name
         self.game_numbers = None
+        self.seat_numbers = None
         self.actions = None
         self.outcomes = None
         self.blinds = None
         self.cards = None
         self.odds = None
         self.stacks = None
+        self.stack_ranks = None
 
     def get_game_numbers(self, games_ff):
         return [x for x in games_ff.keys() if self.name in games_ff[x].players]
+
+    def get_seat_numbers(self, games_ff):
+        t_seat_dict = dict()
+        for t_g_num in self.game_numbers:
+            t_g = games_ff[t_g_num]
+            t_hand_dict = dict()
+            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+                try:
+                    t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].players.index(self.name) + 1})
+                except:
+                    pass
+            t_seat_dict.update({t_g_num: t_hand_dict})
+        return t_seat_dict
 
     def get_game_cards(self, games_ff):
         t_card_dict = dict()
@@ -355,11 +448,21 @@ class Player:
         t_stack_dict = dict()
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
-            t_hand_dict = dict()
+            t_hand_stack_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
-                t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack[self.name]})
-            t_stack_dict.update({t_g_num: t_hand_dict})
+                t_hand_stack_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack[self.name]})
+            t_stack_dict.update({t_g_num: t_hand_stack_dict})
         return t_stack_dict
+
+    def get_stack_ranks(self, games_ff):
+        t_stack_rank_dict = dict()
+        for t_g_num in self.game_numbers:
+            t_g = games_ff[t_g_num]
+            t_hand_stack_rank_dict = dict()
+            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+                t_hand_stack_rank_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack_rank[self.name]})
+            t_stack_rank_dict.update({t_g_num: t_hand_stack_rank_dict})
+        return t_stack_rank_dict
 
     def calc_looseness(self, select_hands_ff=None):
         # if no subset is prescribed for calculation use all available player data
@@ -382,12 +485,14 @@ class Player:
 
     def add_games_info(self, games_f):
         self.game_numbers = self.get_game_numbers(games_f)
+        self.seat_numbers = self.get_seat_numbers(games_f)
         self.actions = self.get_game_actions(games_f)
         self.outcomes = self.get_game_outcomes(games_f)
         self.blinds = self.get_blinds(games_f)
         self.cards = self.get_game_cards(games_f)
         self.odds = self.get_game_odds(games_f)
         self.stacks = self.get_stacks(games_f)
+        self.stack_ranks = self.get_stack_ranks(games_f)
         self.looseness, _, _ = self.calc_looseness()
 
     def print(self):
