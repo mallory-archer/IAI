@@ -1,16 +1,20 @@
 import math
 import pickle
 import pandas as pd
+import numpy as np
 from statsmodels.api import Logit
 import copy
 from assumption_calc_functions import two_sample_test_prop
+import os
+import matplotlib.pyplot as plt
 
 pd.options.display.max_columns = 25
 
 
 class LogisticRegression:
     def __init__(self, endog_name_f=None, exog_name_f=None, data_f=None, add_constant_f=True, scale_vars_list_f=list(),
-                 interaction_name_f=list(), convert_bool_dict_f=dict(), convert_ord_list_f=list(), cat_col_omit_dict_f=dict(), **kwds):
+                 interaction_name_f=list(), convert_bool_dict_f=dict(), convert_ord_list_f=list(), cat_col_omit_dict_f=dict(),
+                 hier_model_vars_dict_f=dict(), hier_exog_var_names_f=list(), classification_threshold_f=0.5, **kwds):
         self.endog_name = endog_name_f
         self.exog_name = exog_name_f
         self.data = data_f.reindex()
@@ -18,15 +22,22 @@ class LogisticRegression:
         self.interaction_name = interaction_name_f
         self.convert_bool_dict = convert_bool_dict_f   # convert_bool_dict_f
         self.convert_ord_list = convert_ord_list_f    # convert_ord_list_f
+        self.hier_model_vars_dict = hier_model_vars_dict_f
+        self.hier_exog_var_names = hier_exog_var_names_f
         self.cat_col_names = list()
         self.cat_col_omit_dict = cat_col_omit_dict_f
         self.cat_col_drop_names = list()
         self.dummy_col_omit_list = list()
         self.scale_vars_list = scale_vars_list_f
+        self.classification_threshold = classification_threshold_f
         self.exog_name_model = None
         self.model_data = None
         self.model = None
         self.model_result = None
+        self.est_coef = dict()
+        self.exog_matrix = None
+        self.endog_matrix = None
+        self.fitted_values = None
 
         self.refresh_model_data()
 
@@ -34,6 +45,7 @@ class LogisticRegression:
         t_bool_ord = set(self.convert_bool_dict.keys()).intersection(set(self.convert_ord_list))
         t_cat_bool = set(self.cat_col_omit_dict.keys()).intersection(set(self.convert_bool_dict.keys()))
         t_cat_ord = set(self.cat_col_omit_dict.keys()).intersection(set(self.convert_ord_list))
+        t_hier_exog = set(self.exog_name).intersection(set(self.hier_exog_var_names))
 
         if len(t_bool_ord) > 0:
             print('WARNING appearing in both boolean and ordinal variable lists: %s' % ', '.join(t_bool_ord))
@@ -41,6 +53,8 @@ class LogisticRegression:
             print('WARNING appearing in both categorical and ordinal variable lists: %s, ignoring categorical' % ', '.join(t_cat_ord))
         if len(t_cat_bool) > 0:
             print('WARNING appearing in both categorical and boolean variable lists: %s, ignoring categorical' % ', '.join(t_cat_bool))
+        if len(t_hier_exog) > 0:
+            print('WARNING appearing in both exogenous and hierarchical exogenous variable lists: %s')
 
     def convert_cat_to_dummies(self):
         # get list of exogenous variables that are categorical and need to be converted
@@ -76,6 +90,27 @@ class LogisticRegression:
         t_df.columns = t_col_names
         return t_df
 
+    def create_hier_vars(self):
+        t_df = pd.DataFrame()
+        for c in self.hier_model_vars_dict.keys():
+            t_model = LogisticRegression(endog_name_f=self.hier_model_vars_dict[c]['external_model'].endog_name,
+                                         exog_name_f=self.hier_model_vars_dict[c]['external_model'].exog_name,
+                                         data_f=self.hier_model_vars_dict[c]['external_model'].data,
+                                         add_constant_f=self.hier_model_vars_dict[c]['external_model'].add_constant,
+                                         scale_vars_list_f=self.hier_model_vars_dict[c]['external_model'].scale_vars_list,
+                                         convert_ord_list_f=self.hier_model_vars_dict[c]['external_model'].convert_ord_list,
+                                         convert_bool_dict_f=self.hier_model_vars_dict[c]['external_model'].convert_bool_dict,
+                                         cat_col_omit_dict_f=self.hier_model_vars_dict[c]['external_model'].cat_col_omit_dict,
+                                         interaction_name_f=self.hier_model_vars_dict[c]['external_model'].interaction_name,
+                                         classification_threshold_f=self.hier_model_vars_dict[c]['classification_threshold'])   #######
+            t_model.create_model_object()
+            t_pred_prob, t_pred_class = self.hier_model_vars_dict[c]['external_model'].make_predictions(pred_data=t_model.exog_matrix,
+                                                                                                        select_coef=self.hier_model_vars_dict[c]['select_coef'])
+            t_col_names = list(t_df.columns) + [c, c + '_TF']
+            t_df = pd.concat([t_df, t_pred_prob, t_pred_class], axis=1)
+            t_df.columns = t_col_names
+        return t_df
+
     def create_interactions(self):
         def create_dummy_df(data_f, v1, v2, drop_list_f):
             prefix_sep = '_'
@@ -109,18 +144,17 @@ class LogisticRegression:
                     vb = v2
                     vd = v1
                 vd_dummies = pd.get_dummies(data_f[vd], prefix_sep=prefix_sep, dtype=bool)
-                vd_omit = data_f[vd].mode(dropna=True).values[0] if vd not in list(
-                    drop_list_f.keys()) else drop_list_f[vd]
+                vd_omit = data_f[vd].mode(dropna=True).values[0] if vd not in list(drop_list_f.keys()) else drop_list_f[vd]
                 t_df = pd.DataFrame(index=data_f.index)
                 for c in [x for x in vd_dummies.columns if x != vd_omit]:
-                    t_df = pd.concat(
-                        [t_df, pd.DataFrame(data_f[vb] & vd_dummies[c], columns=[vb + ' * ' + c + '_INT'])], axis=1)
+                    t_df = pd.concat([t_df, pd.DataFrame(data_f[vb] & vd_dummies[c], columns=[vb + ' * ' + c + '_INT'])], axis=1)
                 return t_df, ({vb: None}, {vd: None})
 
+        t_all_data = pd.concat([self.data, self.model_data[np.setdiff1d(self.model_data.columns, self.data.columns)]], axis=1)
         t_df = pd.DataFrame(index=self.data.index)
         t_dummy_col_omit_list = list()
         for int_act_col1, int_act_col2 in self.interaction_name:
-            t_dummy, t_dummy_omit = create_dummy_df(self.data, int_act_col1, int_act_col2, self.cat_col_omit_dict)
+            t_dummy, t_dummy_omit = create_dummy_df(data_f=t_all_data, v1=int_act_col1, v2=int_act_col2, drop_list_f=self.cat_col_omit_dict)    #####
             t_df = pd.concat([t_df, t_dummy], axis=1)
             t_dummy_col_omit_list.append(t_dummy_omit)
             del t_dummy, t_dummy_omit
@@ -143,15 +177,10 @@ class LogisticRegression:
 
         df_cat_f = self.convert_cat_to_dummies()
 
-        if len(self.interaction_name) > 0:
-            df_interaction_f = self.create_interactions()
-        else:
-            df_interaction_f = None
-
-        return df_bool_f, df_ord_f, df_cat_f, df_interaction_f
+        return df_bool_f, df_ord_f, df_cat_f
 
     def refresh_model_data(self):
-        df_bool_f, df_ord_f, df_cat_f, df_interaction_f = self.code_variables()
+        df_bool_f, df_ord_f, df_cat_f = self.code_variables()
 
         self.check_for_exog_conflict()
 
@@ -164,7 +193,19 @@ class LogisticRegression:
         else:
             df_cat_f_dropped_omit = None
 
-        self.model_data = pd.concat([self.data[self.endog_name], self.data[t_remain_exog], df_bool_f, df_ord_f, df_cat_f_dropped_omit, df_interaction_f], axis=1)
+        self.model_data = pd.concat([self.data[self.endog_name], self.data[t_remain_exog], df_bool_f, df_ord_f, df_cat_f_dropped_omit], axis=1)
+
+        # -------------
+        # add predictions for fold based on estimation of lower model
+        if len(self.hier_model_vars_dict) > 0:
+            df_hier_f = self.create_hier_vars()
+            self.data[df_hier_f.columns] = df_hier_f
+            self.model_data[self.hier_exog_var_names] = df_hier_f[self.hier_exog_var_names]
+
+        # add interaction variables
+        if len(self.interaction_name) > 0:
+            df_interaction_f = self.create_interactions()
+            self.model_data[[x for x in df_interaction_f.columns]] = df_interaction_f
 
         self.exog_name_model = [x for x in self.model_data if x != self.endog_name]
 
@@ -193,13 +234,43 @@ class LogisticRegression:
         if self.add_constant:
             model_mat = pd.concat([pd.DataFrame(data=[1]*model_mat.shape[0], index=model_mat.index, columns=['const']), model_mat], axis=1)
 
-        self.model = Logit(endog=model_mat[self.endog_name], exog=model_mat[[c for c in model_mat.columns if c != self.endog_name]])
+        self.endog_matrix = model_mat[self.endog_name]
+        self.exog_matrix = model_mat[[c for c in model_mat.columns if c != self.endog_name]]
+
+        self.model = Logit(endog=self.endog_matrix, exog=self.exog_matrix)
 
     def estimate_model(self):
         self.refresh_model_data()
         self.create_model_object()
         self.model_result = self.model.fit()
+        self.est_coef.update(dict(zip(list(self.exog_matrix.columns), self.model_result._results.params)))
+        self.make_predictions()     # predict values of training data
         print(self.model_result.summary())
+
+    def make_predictions(self, pred_data=None, select_coef=None):
+        def utility_calc(coef_fff, data_fff):
+            return np.matmul(np.array(data_fff), np.array(coef_fff).reshape(len(coef_fff), 1)).flatten()
+
+        def matrix_pred_calc(coef_ff, data_ff):
+            return np.exp(utility_calc(coef_ff, data_ff)) / (1 + np.exp(utility_calc(coef_ff, data_ff))).flatten()
+
+        def classify_pred(prob_ff, threshold_ff):
+            return prob_ff > threshold_ff
+
+        if pred_data is None:
+            if select_coef is None:
+                self.fitted_values = self.model_result.predict(self.exog_matrix)
+                return self.fitted_values, classify_pred(self.fitted_values, self.classification_threshold)
+            else:
+                t_pred = pd.Series(matrix_pred_calc(coef_ff=[self.est_coef.get(key) for key in select_coef], data_ff=self.exog_matrix[select_coef]), index=self.exog_matrix.index)
+                return t_pred, classify_pred(t_pred, self.classification_threshold)
+        else:
+            if select_coef is None:
+                t_pred = self.model_result.predict(pred_data[:, [x for x in pred_data.columns if x in list(self.est_coef.keys())]])
+                return t_pred, classify_pred(t_pred, self.classification_threshold)
+            else:
+                t_pred = pd.Series(matrix_pred_calc(coef_ff=[self.est_coef.get(key) for key in select_coef], data_ff=pred_data[select_coef]), index=pred_data.index)
+                return t_pred, classify_pred(t_pred, self.classification_threshold)
 
 
 def create_master_data_frame(games_f):
@@ -232,7 +303,7 @@ def create_master_data_frame(games_f):
     return df_f
 
 
-def engineer_features(df_f):
+def engineer_features(df_f, external_model_f=None):
     # add additional features
     df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
     df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
@@ -258,6 +329,7 @@ def engineer_features(df_f):
                         'zero_or_blind_only_outcome_previous_TF': bool,
                         'loss_outcome_xonlyblind_previous_TF': bool, 'win_outcome_xonlyblind_previous_TF': bool
                         })
+
     return df_f
 
 
@@ -320,27 +392,61 @@ def inverse_logit(x):
 
 
 def format_logistic_regression_output(logistic_model_f):
-    print('WARNING: calculation of mean effects assumes CONSTANT was present in model.')
     # get mean of coefficient values to calculate average effects
 
     coef_const_vals_f = dict(logistic_model_f.model_data[[x for x in logistic_model_f.model_result.params.index
                                                           if ((x != 'const') and
                                                           (logistic_model_f.model_data[x].dtype != bool))]].mean())
-    coef_const_vals_f.update({'const': 1})
+    if len([x for x in logistic_model.model_result.params.index if x == 'const']) == 1:
+        coef_const_vals_f.update({'const': 1})
+    else:
+        coef_const_vals_f.update({'const': 0})
     coef_const_vals_f.update(dict([(x, 0) for x in logistic_model_f.model_result.params.index if ((x != 'const') and (logistic_model_f.model_data[x].dtype == bool))]))
 
     df_f = pd.DataFrame(data={'params': logistic_model_f.model_result.params, 'std_err': logistic_model_f.model_result.bse, 't_stat': logistic_model_f.model_result.tvalues, 'pvalue': logistic_model_f.model_result.pvalues, 'base_value': coef_const_vals_f})
+    df_f.loc[df_f['params'].isnull(), 'params'] = 0
+
     reg_col_names_f = list(df_f.columns)
     df_f.loc['const', 'inverse_logit_incl_base'] = inverse_logit(sum([df_f.loc[k, 'params'] * v for k, v in coef_const_vals_f.items()]))
     df_f.loc['const', 'increase_prob_from_base'] = df_f.loc['const', 'inverse_logit_incl_base']
+    print('Note: in format_logistic_regression_output the increase_prob_from_base for the const. \nis the actual base probability, it is *not* the increase, which is 0')
     for label in df_f.index:
         if label != 'const':
             df_f.loc[label, 'inverse_logit_incl_base'] = inverse_logit(sum([df_f.loc[k, 'params'] * v for k, v in coef_const_vals_f.items()]) + df_f.loc[label, 'params'])
-            df_f.loc[label, 'increase_prob_from_base'] = df_f.loc['const', 'inverse_logit_incl_base'] - df_f.loc[label, 'inverse_logit_incl_base']
+            df_f.loc[label, 'increase_prob_from_base'] = df_f.loc[label, 'inverse_logit_incl_base'] - df_f.loc['const', 'inverse_logit_incl_base']
 
     label_order_f = ['const'] + [x for x in df_f.index if (x.find(' * ') == -1) & (x != 'const')] + [x for x in df_f.index if x.find(' * ') > -1]
-    return df_f.loc[label_order_f, reg_col_names_f + ['increase_prob_from_base', 'inverse_logit_incl_base']]
 
+    # initialize case covariates
+    df_f['pluribus_neutral_outcome_value'] = df_f['base_value']
+    df_f['pluribus_win_outcome_value'] = df_f['base_value']
+    df_f['pluribus_loss_outcome_value'] = df_f['base_value']
+    df_f['human_neutral_outcome_value'] = df_f['base_value']
+    df_f['human_win_outcome_value'] = df_f['base_value']
+    df_f['human_loss_outcome_value'] = df_f['base_value']
+
+    player_rows = df_f.loc[[x.find('player') > -1 for x in df_f.index]].index
+    win_rows = df_f.loc[[x.find('win_outcome') > -1 for x in df_f.index]].index
+    loss_rows = df_f.loc[[x.find('loss_outcome') > -1 for x in df_f.index]].index
+
+    df_f.loc[~df_f.index.isin(list(player_rows)) & df_f.index.isin(list(win_rows)), 'pluribus_win_outcome_value'] = 1  ###
+    df_f.loc[~df_f.index.isin(list(player_rows)) & df_f.index.isin(list(loss_rows)), 'pluribus_loss_outcome_value'] = 1   ###
+    df_f.loc[df_f.index.isin(list(player_rows)) & ~df_f.index.isin(list(win_rows)) & ~df_f.index.isin(list(loss_rows)), 'human_neutral_outcome_value'] = 1  ###
+    df_f.loc[(df_f.index.isin(list(player_rows)) | df_f.index.isin(list(win_rows))) & ~df_f.index.isin(list(loss_rows)), 'human_win_outcome_value'] = 1  ###
+    df_f.loc[(df_f.index.isin(list(player_rows)) | df_f.index.isin(list(loss_rows))) & ~df_f.index.isin(list(win_rows)), 'human_loss_outcome_value'] = 1  ###
+
+    df_case = pd.DataFrame(index=['pluribus_neutral_outcome_value', 'pluribus_win_outcome_value', 'pluribus_loss_outcome_value',
+                                  'human_neutral_outcome_value', 'human_win_outcome_value', 'human_loss_outcome_value'],
+                           columns=['inverse_logit_prob'])
+    for case in df_case.index:
+        df_case.loc[case, 'inverse_logit_prob'] = inverse_logit(sum(df_f['params'] * df_f[case]))
+
+    return df_f.loc[label_order_f, reg_col_names_f + ['increase_prob_from_base', 'inverse_logit_incl_base']], pd.concat([df_case,
+                                                                                                                         df_f[list(df_case.index)].transpose()], axis=1)
+
+
+# ----- File I/O params -----
+fp_output = 'output'
 
 # ----- LOAD DATA -----
 with open("python_hand_data.pickle", 'rb') as f:
@@ -371,28 +477,141 @@ for specs in hyp_test_specs.values():
                                               test_case_names_f=specs['test_cases'],
                                               player_names_f=['human', 'ADM'])
 
-# df_data_summary.to_csv('data_summary.csv')
+
+# df_data_summary.to_csv(os.path.join(fp_output, 'data_summary.csv'))
 
 # ----- SPECIFY MODEL PARAMS ----
 endog_var_name = 'preflop_fold_TF'
 add_constant = True
-exog_var_name = []    # 'player', 'loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF',
+exog_var_name = ['human_player_TF']
 ordinal_vars = ['slansky', 'seat_map']    # 'seat_map': seat_map reassigns the first seat to the player sitting in seat 3; this is to allow for ordinal varaibles to account for nonlinearity in seats 1 and 2 as a result of blinds
 bool_vars = {}
-categorical_drop_vals = {'seat': '3', 'stack_rank': '1'}    # 'player': 'Pluribus',
-interaction_vars = [('loss_outcome_xonlyblind_previous_TF', 'human_player_TF'), ('win_outcome_xonlyblind_previous_TF', 'human_player_TF')]   # ('loss_outcome_xonlyblind_previous_TF', 'player'), ('win_outcome_xonlyblind_previous_TF', 'player')
+categorical_drop_vals = {'seat': '3', 'stack_rank': '1', 'player': 'Pluribus'}    # 'player': 'Pluribus',
+interaction_vars = [('loss_outcome_xonlyblind_previous_TF', 'human_player_TF'), ('win_outcome_xonlyblind_previous_TF', 'human_player_TF')]
 scale_vars_list = ['start_stack']
 
 # filter and map
 df_data = df_master.reindex()
 df_data['seat_map'] = df_data['seat'].map({'1': '5', '2': '6', '3': '1', '4': '2', '5': '3', '6': '4'})
 
+# logistic_model \
 logistic_model = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_data,
                                     add_constant_f=add_constant, scale_vars_list_f=scale_vars_list,
                                     convert_ord_list_f=ordinal_vars, convert_bool_dict_f=bool_vars,
                                     cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
 logistic_model.estimate_model()
 
-df_coef_output = format_logistic_regression_output(logistic_model)
+# plot accuracy
+plt.figure()
+plt.scatter(logistic_model.fitted_values.to_list(), logistic_model.endog_matrix.to_list(), c=['blue' if x else 'red' for x in logistic_model.data['human_player_TF']])
+plt.xlabel('Predicted probability of %s' % endog_var_name)
+plt.ylabel('Actual choice')
+plt.title('Logistic regression predictions for pre-flop fold')
 
-# df_coef_output.to_csv('logistic_regression_output.csv')
+df_coef_output, df_case_output = format_logistic_regression_output(logistic_model)
+
+# ----- SAVE MODEL RESULTS ------
+# with open(os.path.join(fp_output, 'logistic_model_' + '-'.join(logistic_model.exog_name_model) + ".pickle"), 'wb') as f:
+#     pickle.dump(logistic_model, f)
+# logistic_model.model_data.to_csv(os.path.join(fp_output, 'logistic_regression_data.csv'))
+# df_coef_output.to_csv(os.path.join(fp_output, 'logistic_regression_output.csv'))
+# df_case_output.to_csv(os.path.join(fp_output, 'case_prob_summary.csv'))
+
+# ----------- CAN WE PREDICT IF PLAYER IS PLURIBUS OR HUMAN? ----------
+# ----- SPECIFY MODEL PARAMS ----
+# Trying to identify Pluribus based on our expectations of how humans will behave vs. Pluribus will behave
+# following a loss/win. Expectations are based on what the probability of playing the hand was given the
+# slansky and seat and whether or not the previous hand was a win or a loss. Pluribus should play the odds,
+# the humans should deviate. Would say "I think this is a human because in this situation I expected a fold,
+# but in fact it was a play" - variable is probability of play interacted with play/fold?
+# const -> base expectation is human
+# defied expectations AND previous hand is trigger -> increases probability of being human
+
+endog_var_name = 'human_player_TF'
+add_constant = False
+exog_var_name = []#, 'loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF']
+ordinal_vars = []    # 'seat_map': seat_map reassigns the first seat to the player sitting in seat 3; this is to allow for ordinal varaibles to account for nonlinearity in seats 1 and 2 as a result of blinds
+bool_vars = {}
+categorical_drop_vals = {'seat': '3', 'stack_rank': '1', 'player': 'Pluribus'}    # 'player': 'Pluribus',
+interaction_vars = [('base_prob_fold_TF', 'preflop_fold_TF'), ('loss_outcome_xonlyblind_previous_TF', 'preflop_fold_TF'), ('win_outcome_xonlyblind_previous_TF', 'preflop_fold_TF')]
+scale_vars_list = ['start_stack']
+hier_model_vars_dict = {'base_prob_fold': {'external_model': logistic_model, 'select_coef': ['const', 'slansky_ORD', 'seat_map_ORD'], 'classification_threshold': 0.7}}
+hier_exog_var_names = ['base_prob_fold']
+
+# filter and map
+df_data = df_master.reindex()
+
+df_data['seat_map'] = df_data['seat'].map({'1': '5', '2': '6', '3': '1', '4': '2', '5': '3', '6': '4'})
+
+logistic_model_robot = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_data,
+                                          add_constant_f=add_constant, scale_vars_list_f=scale_vars_list,
+                                          convert_ord_list_f=ordinal_vars, convert_bool_dict_f=bool_vars,
+                                          hier_model_vars_dict_f=hier_model_vars_dict, hier_exog_var_names_f=hier_exog_var_names,
+                                          cat_col_omit_dict_f=categorical_drop_vals, interaction_name_f=interaction_vars)
+logistic_model_robot.estimate_model()
+
+# get prob predictions
+plt.figure()
+logistic_model_robot.fitted_values.hist()
+plt.xlabel('Predicted probability of %s' % endog_var_name)
+plt.ylabel('Frequency')
+plt.title('Logistic regression predicted values for training data set')
+
+# ------ PLOT ROC curves -----
+from sklearn import metrics
+pd.DataFrame(metrics.confusion_matrix(logistic_model_robot.endog_matrix, logistic_model_robot.fitted_values > 0.5, normalize='all'), index=['actual_False', 'actual_True'], columns=['pred_False', 'pred_True'])
+pd.DataFrame(metrics.confusion_matrix(logistic_model_robot.endog_matrix, [1]*len(logistic_model_robot.endog_matrix), normalize='all'), index=['actual_False', 'actual_True'], columns=['pred_False', 'pred_True'])
+pd.DataFrame(metrics.confusion_matrix(logistic_model_robot.endog_matrix, [0]*len(logistic_model_robot.endog_matrix), normalize='all'), index=['actual_False', 'actual_True'], columns=['pred_False', 'pred_True'])
+
+
+def conf_mat_atts(y_actual, y_pred, thresholds_f, normalize_TF_f=False):
+    t_true_pos = list()
+    t_false_pos = list()
+    t_hit_rate = list()
+    if (type(thresholds_f) == float) or (type(thresholds_f) == int):
+        thresholds_f = [thresholds_f]
+
+    for t_thresh in thresholds_f:
+        if normalize_TF_f:
+            t_conf_mat = metrics.confusion_matrix(y_actual, y_pred > t_thresh, normalize='all')
+        else:
+            t_conf_mat = metrics.confusion_matrix(y_actual, y_pred > t_thresh)
+        t_true_pos.append(t_conf_mat[1, 1])
+        t_false_pos.append(t_conf_mat[0, 1])
+        t_hit_rate.append((t_conf_mat[1, 1] + t_conf_mat[0, 0]) / sum(sum(t_conf_mat)))
+
+    return pd.DataFrame(t_conf_mat, index=['actual_False', 'actual_True'], columns=['pred_False', 'pred_True']), {'true_pos': t_true_pos, 'false_pos': t_false_pos, 'hit_rate': t_hit_rate}
+
+thresholds = [x/100 for x in range(0, 100, 10)]
+
+data_sets = dict()
+
+# model
+_, t_summary_atts = conf_mat_atts(y_actual=logistic_model_robot.endog_matrix, y_pred=logistic_model_robot.fitted_values, thresholds_f=thresholds)
+data_sets['model'] = t_summary_atts
+del t_summary_atts
+
+# random
+_, t_summary_atts = conf_mat_atts(y_actual=logistic_model_robot.endog_matrix, y_pred=np.random.uniform(size=len(logistic_model_robot.endog_matrix)), thresholds_f=thresholds)
+data_sets['random'] = t_summary_atts
+del t_summary_atts
+
+plt.figure()
+for series in data_sets:
+    plt.plot(data_sets[series]['false_pos'], data_sets[series]['true_pos'])  #, c=data_sets[series]['color'])
+plt.xlabel('False positives')
+plt.ylabel('True positives')
+plt.title('ROC curve')
+plt.legend(list(data_sets.keys()))
+
+plt.figure()
+for series in data_sets:
+    plt.plot(thresholds, data_sets[series]['hit_rate'])  #, c=data_sets[series]['color'])
+plt.xlabel('Threshold')
+plt.ylabel('Hit Rate')
+plt.title('Accuracy by classification threshold')
+plt.legend(list(data_sets.keys()))
+
+
+# df_coef_output_robot, _ = format_logistic_regression_output(logistic_model_robot)
+
