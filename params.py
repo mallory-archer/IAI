@@ -39,42 +39,41 @@ def prob_winning_transform(args_list_f, exp_loss_f):
 
 # --------------------- INFER WIN PROBABILITIES AND PAYOFFS FROM DATA SET ---------------------------
 # ---- Run summary functions on actual data to approximate win / loss probabilities and payoffs; output of acf function has other options for levels of aggregation
-def create_prob_payoff_save_strings(slansky_groups_f, seat_groups_f, stack_groups_f):
-    slansky_save_string_f = '_' + '_'.join([''.join([x for x in y]) for y in slansky_groups_f]) if slansky_groups_f is not None else ''
-    seat_save_string_f = '_' + '_'.join([''.join([x for x in y]) for y in seat_groups_f]) if seat_groups_f is not None else ''
-    stack_save_string_f = '_' + '_'.join([''.join([x for x in y]) for y in stack_groups_f]) if stack_groups_f is not None else ''
+# def create_prob_payoff_save_strings(slansky_groups_f, seat_groups_f, stack_groups_f):
+#     slansky_save_string_f = '_' + '_'.join([''.join([x for x in y]) for y in slansky_groups_f]) if slansky_groups_f is not None else ''
+#     seat_save_string_f = '_' + '_'.join([''.join([x for x in y]) for y in seat_groups_f]) if seat_groups_f is not None else ''
+#     stack_save_string_f = '_' + '_'.join([''.join([x for x in y]) for y in stack_groups_f]) if stack_groups_f is not None else ''
+#
+#     prob_save_string_f = 'prob_slansky' + slansky_save_string_f + '_seat' + seat_save_string_f + '_stack' + stack_save_string_f
+#     payoff_save_string_f = 'payoff_slansky' + slansky_save_string_f + '_seat' + seat_save_string_f + '_stack' + stack_save_string_f
+#     return prob_save_string_f, payoff_save_string_f, slansky_save_string_f, seat_save_string_f, stack_save_string_f
 
-    prob_save_string_f = 'prob_slansky' + slansky_save_string_f + '_seat' + seat_save_string_f + '_stack' + stack_save_string_f
-    payoff_save_string_f = 'payoff_slansky' + slansky_save_string_f + '_seat' + seat_save_string_f + '_stack' + stack_save_string_f
-    return prob_save_string_f, payoff_save_string_f, slansky_save_string_f, seat_save_string_f, stack_save_string_f
+# def create_prob_payoff_dict(games_f, slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None, write_to_file_TF_f=False):
+#     slansky_groups_f = [[str(x) for x in y] for y in slansky_groups_f] if slansky_groups_f is not None else None
+#     seat_groups_f = [[str(x) for x in y] for y in seat_groups_f] if seat_groups_f is not None else None
+#     stack_groups_f = [[str(x) for x in y] for y in stack_groups_f] if stack_groups_f is not None else None
+#     prob_counts_dict_f, payoff_counts_dict_f, prob_dict_f, payoff_dict_f = acf.calc_prob_winning_slansky_rank(games_f,
+#                                                                                                               slansky_groups_f=slansky_groups_f,
+#                                                                                                               seat_groups_f=seat_groups_f,
+#                                                                                                               stack_groups_f=stack_groups_f
+#                                                                                                               )
+#     if write_to_file_TF_f:
+#         prob_save_string_f, payoff_save_string_f, _, _, _ = create_prob_payoff_save_strings(slansky_groups_f, seat_groups_f, stack_groups_f)
+#         with open(prob_save_string_f + '.json','w') as f:
+#             json.dump(prob_dict_f, f)
+#         with open(payoff_save_string_f + '.json', 'w') as f:
+#             json.dump(payoff_dict_f, f)
+#
+#     return prob_counts_dict_f, payoff_counts_dict_f, prob_dict_f, payoff_dict_f
 
 
-def create_prob_payoff_dict(games_f, slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None, write_to_file_TF_f=False):
-    slansky_groups_f = [[str(x) for x in y] for y in slansky_groups_f] if slansky_groups_f is not None else None
-    seat_groups_f = [[str(x) for x in y] for y in seat_groups_f] if seat_groups_f is not None else None
-    stack_groups_f = [[str(x) for x in y] for y in stack_groups_f] if stack_groups_f is not None else None
-    prob_counts_dict_f, payoff_counts_dict_f, prob_dict_f, payoff_dict_f = acf.calc_prob_winning_slansky_rank(games_f,
-                                                                                                              slansky_groups_f=slansky_groups_f,
-                                                                                                              seat_groups_f=seat_groups_f,
-                                                                                                              stack_groups_f=stack_groups_f
-                                                                                                              )
-    if write_to_file_TF_f:
-        prob_save_string_f, payoff_save_string_f, _, _, _ = create_prob_payoff_save_strings(slansky_groups_f, seat_groups_f, stack_groups_f)
-        with open(prob_save_string_f + '.json','w') as f:
-            json.dump(prob_dict_f, f)
-        with open(payoff_save_string_f + '.json', 'w') as f:
-            json.dump(payoff_dict_f, f)
-
-    return prob_counts_dict_f, payoff_counts_dict_f, prob_dict_f, payoff_dict_f
-
-
-def load_prob_payoff_dict(slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None):
-    prob_save_string_f, payoff_save_string_f, _, _, _ = create_prob_payoff_save_strings(slansky_groups_f, seat_groups_f, stack_groups_f)
-    with open(prob_save_string_f + '.json', 'r') as f:
-        prob_dict_f = json.load(f)
-    with open(payoff_save_string_f + '.json', 'r') as f:
-        payoff_dict_f = json.load(f)
-    return prob_dict_f, payoff_dict_f
+# def load_prob_payoff_dict(slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None):
+#     prob_save_string_f, payoff_save_string_f, _, _, _ = create_prob_payoff_save_strings(slansky_groups_f, seat_groups_f, stack_groups_f)
+#     with open(prob_save_string_f + '.json', 'r') as f:
+#         prob_dict_f = json.load(f)
+#     with open(payoff_save_string_f + '.json', 'r') as f:
+#         payoff_dict_f = json.load(f)
+#     return prob_dict_f, payoff_dict_f
 
 
 # ---- Load previously calculated saved probabilities and payoffs ---
