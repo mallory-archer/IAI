@@ -3,7 +3,7 @@ import os
 import json
 # import pandas as pd
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, Bounds
 
 from assumption_calc_functions import calc_prob_winning_slansky_rank
 from assumption_calc_functions import create_game_hand_index
@@ -13,7 +13,7 @@ fp_output = 'output'
 fn_prob_payoff_dict = 'prob_payoff_dicts.json'
 
 # ---- Params -----
-select_player = 'Pluribus'
+select_player = 'Bill'
 
 # ----- LOAD DATA -----
 # game data
@@ -60,16 +60,31 @@ class ChoiceSituation:
 
 
 def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_dict_f):
+    def get_min_observed_payoff(player_ff, game_hand_index_ff):
+        # get payoffs to examine min payoff for shifting into postive domain
+        obs_avg_payoffs = list()
+        for game_num, hands in game_hand_index_ff.items():
+            for hand_num in hands:
+                try:
+                    t_slansky_rank = str(player_ff.odds[game_num][hand_num]['slansky'])
+                    t_seat_num = str(player_ff.seat_numbers[game_num][hand_num])
+                    obs_avg_payoffs.append(payoff_dict_f[t_slansky_rank][t_seat_num]['win_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['win_count'])
+                    obs_avg_payoffs.append(payoff_dict_f[t_slansky_rank][t_seat_num]['loss_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['loss_count'])
+                except KeyError:
+                    print('Error for keys game %s and hand %s' % (game_num, hand_num))
+        return min(obs_avg_payoffs)
+
     choice_situations_f = list()
     num_choice_situations_dropped = 0
+
+    big_blind = 100
+    small_blind = 50
+    payoff_units_f = 10/big_blind
+    payoff_shift_f = get_min_observed_payoff(player_f, game_hand_index_f) * -1
 
     for game_num, hands in game_hand_index_f.items():
         for hand_num in hands:
             try:
-                big_blind = 100
-                small_blind = 50
-                payoff_units_f = big_blind * 1
-
                 t_slansky_rank = str(player_f.odds[game_num][hand_num]['slansky'])
                 t_seat_num = str(player_f.seat_numbers[game_num][hand_num])
 
@@ -80,11 +95,16 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
 
                 tfold_win_prob = 0  # cannot win under folding scenario
                 if player_f.blinds[game_num][hand_num]['big']:
-                    tfold_lose_payoff = (big_blind * -1)/payoff_units_f
+                    tfold_lose_payoff = (big_blind * -1)
                 elif player_f.blinds[game_num][hand_num]['small']:
-                    tfold_lose_payoff = (small_blind * -1)/payoff_units_f
+                    tfold_lose_payoff = (small_blind * -1)
                 else:
-                    tfold_lose_payoff = 0/payoff_units_f
+                    tfold_lose_payoff = 0
+
+                # --- shift/scale payoffs ----
+                tplay_win_payoff = (tplay_win_payoff + payoff_shift_f) * payoff_units_f
+                tplay_lose_payoff = (tplay_lose_payoff + payoff_shift_f) * payoff_units_f
+                tfold_lose_payoff = (tfold_lose_payoff + payoff_shift_f) * payoff_units_f
 
                 t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
                                                                   'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
@@ -133,35 +153,11 @@ def calc_CRRA_utility(outcomes, omega):
                 return prob * (np.sign(payoff) * (abs(payoff) ** (1 - omega))) / (1 - omega)
     return sum([calc_outcome_util(prob=o['prob'], payoff=o['payoff'], omega=omega) for o in outcomes])
 
-# def calc_RUM_LL(kappa, lam, omega, data):
-#     def calc_LLi(X, Y, I, util_X, util_Y, kappa, lam):
-#         return (X + I/2) * np.log(((1-2*kappa)*np.exp(lam*util_X)) / (np.exp(lam*util_X) + np.exp(lam*util_Y)) + kappa) + \
-#                (Y + I / 2) * np.log(((1 - 2 * kappa) * np.exp(lam * util_Y)) / (np.exp(lam * util_X) + np.exp(lam * util_Y)) + kappa)
-#     LLi = list()
-#     for rank in data.keys():
-#         for seat in data[rank].keys():
-#             # Xi = data[rank][seat]['n_chosen']['play']
-#             # Yi = data[rank][seat]['n_chosen']['fold']
-#             # Ii = 0
-#             # util_Xi = calc_CRRA_utility(data[rank][seat]['params']['play'], omega)
-#             # util_Yi = calc_CRRA_utility(data[rank][seat]['params']['fold'], omega)
-#             LLi.append(calc_LLi(X=data[rank][seat]['n_chosen']['play'],
-#                                 Y=data[rank][seat]['n_chosen']['fold'],
-#                                 I=0,
-#                                 util_X=calc_CRRA_utility(data[rank][seat]['params']['play'], omega),
-#                                 util_Y=calc_CRRA_utility(data[rank][seat]['params']['fold'], omega),
-#                                 kappa=kappa,
-#                                 lam=lam))
-#     return sum(LLi)
-
 
 # Run code
-
 choice_situations = generate_choice_situations(player_f=players[select_player_index], game_hand_index_f=game_hand_player_index, payoff_dict_f=payoff_dict, prob_dict_f=prob_dict)
 
 choice_param_dictionary = reformat_choice_situations_for_model(choice_situations)
-
-# LL_RUM = calc_RUM_LL(kappa=0.008, lam=4.572, omega=2, data=choice_param_dictionary)
 
 
 class RandomUtilityModel:
@@ -198,37 +194,88 @@ class RandomUtilityModel:
                                     kappa=self.kappa_f,
                                     lam=self.lambda_f))
 
-        return -sum(LLi)*10
+        return -sum(LLi)
 
-    def fit(self, init_params=None):
+    def fit(self, init_params=None, **kwargs):
         if init_params is None:
             self.init_params = [1] * len(self.param_names_f)
         else:
             self.init_params = init_params
 
-        self.results = minimize(self.negLL, self.init_params, method="Nelder-Mead", options={"disp": True})
+        # print('---Arguments passed to solver---')
+        # print('Function: %s' % self.negLL)
+        # print('Initial point: %s' % self.init_params)
+        # for k, v in kwargs.items():
+        #     print("%s, %s" % (k, v))
+
+        self.results = minimize(self.negLL,
+                                self.init_params,
+                                **kwargs
+                                )
 
     def print(self):
         for k, v in self.__dict__.items():
             print('%s: %s' % (k, v))
 
+
 import copy
-test_dict = copy.deepcopy(choice_param_dictionary)
+# test_dict = copy.deepcopy(choice_param_dictionary)
 # calc_RUM_LL(kappa=0.008, lam=4.572, omega=2, data=test_dict)
-test_dict.pop(9)
-test_dict[5].pop(4)
+# test_dict.pop(9)
+# test_dict[5].pop(4)
 
 test = RandomUtilityModel(choice_param_dictionary)
-test.negLL([0.008, 4.5, 0.5])
-test.fit(init_params=[0.008, 5, 0.5])
+test.negLL([0.1, 2, 0.5])
+test.fit(init_params=[0.1, 1.5, 0.5], method='l-bfgs-b',
+         bounds=Bounds(lb=[0, 0, 0], ub=[1, 100, 100]),
+         tol=1e-8,
+         options={'disp': True, 'maxiter': 1000, 'verbose': 3})
 test.print()
 
+nstart_points = 1000
+initial_points = {'kappa': np.random.uniform(low=0, high=0.1, size=nstart_points),
+                  'lambda': np.random.uniform(low=1, high=100, size=nstart_points),
+                  'omega': np.random.uniform(low=1, high=2, size=nstart_points)}
+[test.negLL([initial_points[test.param_names_f[0]][i],
+             initial_points[test.param_names_f[1]][i],
+             initial_points[test.param_names_f[2]][i]]) for i in range(len(initial_points['kappa']))]
+results_list = list()
+for i in range(len(initial_points['kappa'])):
+    if (i % 50) == 0:
+        print('Optimizing for starting point %d' % i)
+    test.fit(init_params=[initial_points[test.param_names_f[0]][i],
+                          initial_points[test.param_names_f[1]][i],
+                          initial_points[test.param_names_f[2]][i]],
+             method='l-bfgs-b',
+             bounds=Bounds(lb=[0, 0, 0], ub=[1, 100, 100]),
+             tol=1e-8,
+             options={'disp': False, 'verbose': 3})
+    results_list.append(copy.deepcopy(test.results))
+est_dict = {test.param_names_f[0]: [],
+            test.param_names_f[1]: [],
+            test.param_names_f[2]: []}
+for r in range(len(results_list)):
+    for p in range(len(test.param_names_f)):
+        est_dict[test.param_names_f[p]].append(results_list[r].x[p])
+
+    if results_list[r].x[0] != 1:
+        print('%s: %s' % ([initial_points[test.param_names_f[0]][r],
+                           initial_points[test.param_names_f[1]][r],
+                           initial_points[test.param_names_f[2]][r]], results_list[r].x))
+
+# --------- VISUAL INVESTIGATION ---------
 import matplotlib.pyplot as plt
+plt.hist([x for x in est_dict[test.param_names_f[2]] if x < 100])
+plt.title(test.param_names_f[2])
+
+
 def test_CRRA_calc(data, x):
     try:
         return calc_CRRA_utility(data, x)
     except ZeroDivisionError:
         return 100
+
+
 def test_negLL_calc(model_class, x):
     try:
         model_class.negLL([0.008, 4.5, x])
@@ -236,15 +283,20 @@ def test_negLL_calc(model_class, x):
         return 100
 
 
-plt.scatter([x for x in [i/100 for i in range(1, 300)]], [test_CRRA_calc(choice_param_dictionary[5][6]['params']['play'], x) for x in [i/100 for i in range(1, 300)]])
-
 def calc_prob(outcomes_x, outcomes_y, lambda_f, omega_f):
     Ux = test_CRRA_calc(data=outcomes_x, x=omega_f)
     Uy = test_CRRA_calc(data=outcomes_y, x=omega_f)
     return np.exp(lambda_f * Ux) / (np.exp(lambda_f * Ux) + np.exp(lambda_f * Uy))
-outcomes_x = [{'payoff': -1, 'prob': 0.9}, {'payoff': 100, 'prob': 0.1}]
+
+
+plt.scatter([x for x in [i/100 for i in range(1, 300)]], [test_CRRA_calc(choice_param_dictionary[5][6]['params']['play'], x) for x in [i/100 for i in range(1, 300)]])
+
+outcomes_x = [{'payoff': 1, 'prob': 0.9}, {'payoff': -60, 'prob': 0.1}]
+
 outcomes_y = [{'payoff': 0, 'prob': 1}]
+
 calc_CRRA_utility(outcomes=outcomes_x, omega=0.4)
+
 plt.scatter([x for x in [i/100 for i in range(0, 100)]], [test_CRRA_calc(data=outcomes_x, x=x) for x in [i/100 for i in range(0, 100)]])
 plt.scatter([x for x in [i/100 for i in range(0, 100)]], [test_CRRA_calc(data=outcomes_y, x=x) for x in [i/100 for i in range(0, 100)]])
 plt.scatter([x for x in [i/100 for i in range(1, 100)]], [test_CRRA_calc(data=outcomes_x, x=x) - test_CRRA_calc(data=outcomes_y, x=x) for x in [i/100 for i in range(1, 100)]])

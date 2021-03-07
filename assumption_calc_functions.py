@@ -133,6 +133,21 @@ def calc_prob_winning_slansky_rank(games_f, slansky_groups_f=None, seat_groups_f
         del g_num, h_num, p
         return slansky_prob_dict_ff, slansky_payoff_dict_ff
 
+    def get_payoff_counts(games_ff):
+        # if plot enabled, can examine distribuiton of payoffs
+        payoff_counts_dict = dict()
+        payoff_list = list()
+        for g_num in games_ff.keys():
+            for h_num in games_ff[g_num].hands.keys():
+                for p in games_ff[g_num].hands[h_num].outcomes.keys():
+                    payoff_list.append(games_ff[g_num].hands[h_num].outcomes[p])
+                    try:
+                        payoff_counts_dict[games_ff[g_num].hands[h_num].outcomes[p]] += 1
+                    except KeyError:
+                        payoff_counts_dict[games_ff[g_num].hands[h_num].outcomes[p]] = 1
+        # plt.scatter([amt for amt in payoff_counts_dict.keys() if (amt != 0) & ((amt < -500) or (amt > 500))],
+        #             [freq for amt, freq in payoff_counts_dict.items() if  (amt != 0) & ((amt < -500) or (amt > 500))])
+
     def marginal_aggregation(slansky_prob_dict_ff, slansky_payoff_dict_ff,
                              slansky_groups_ff=None,
                              seat_groups_ff=None,
