@@ -3,7 +3,11 @@ import os
 import json
 import copy
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize, Bounds
+import binascii
+import random
+
 
 from assumption_calc_functions import calc_prob_winning_slansky_rank
 from assumption_calc_functions import create_game_hand_index
@@ -13,7 +17,20 @@ fp_output = 'output'
 fn_prob_payoff_dict = 'prob_payoff_dicts.json'
 
 # ---- Params -----
-select_player = 'Bill'
+# --- data selection params
+select_player = 'Pluribus'
+select_case = 'post_loss_excl_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
+fraction_of_data_to_use_for_estimation = .8
+
+# ---- multi start params
+num_multistarts = 100000
+save_TF = True
+save_iter = 5000
+save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
+
+# ----- Calcs -----
+if not save_TF:
+    save_iter = False   # pass the false condition on saving to multifactor function
 
 # ----- LOAD DATA -----
 # game data
@@ -45,7 +62,7 @@ class Option:
 
 
 class ChoiceSituation:
-    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, seat=None, post_loss=None, CRRA_ordered_gamble_type=None):
+    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, seat=None, post_loss=None, post_win=None, post_neutral=None, post_loss_excl_blind_only=None, post_win_excl_blind_only=None, post_neutral_or_blind_only=None, CRRA_ordered_gamble_type=None):
         self.options = sit_options
         self.option_names = [x.name for x in sit_options]
         self.choice = sit_choice
@@ -53,6 +70,11 @@ class ChoiceSituation:
         self.stack_rank = stack_rank
         self.seat = seat
         self.post_loss = post_loss
+        self.post_win = post_win
+        self.post_neutral = post_neutral
+        self.post_loss_excl_blind_only = post_loss_excl_blind_only
+        self.post_win_excl_blind_only = post_win_excl_blind_only
+        self.post_neutral_or_blind_only = post_neutral_or_blind_only
         self.CRRA_ordered_gamble_type = CRRA_ordered_gamble_type
 
     def print(self):
@@ -167,7 +189,7 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
 
     big_blind = 100
     small_blind = 50
-    payoff_units_f = 1  #/big_blind
+    payoff_units_f = 1/big_blind
     payoff_shift_f = get_min_observed_payoff(player_f, game_hand_index_f) * -1
 
     for game_num, hands in game_hand_index_f.items():
@@ -199,8 +221,21 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
                                     Option(name='fold', outcomes={'lose': {'payoff': tfold_lose_payoff, 'prob': 1 - tfold_win_prob}})]
                 try:
                     t_post_loss_bool = (player_f.outcomes[game_num][str(int(hand_num)-1)] < 0)
+                    t_post_win_bool = (player_f.outcomes[game_num][str(int(hand_num) - 1)] > 0)
+                    t_neutral_bool = (not t_post_loss_bool) and (not t_post_win_bool)
+                    t_post_loss_xonlyblind_previous_bool = t_post_loss_bool & (
+                            player_f.outcomes[game_num][str(int(hand_num)-1)] != -small_blind) & (
+                            player_f.outcomes[game_num][str(int(hand_num)-1)] != -big_blind)
+                    t_post_win_outcome_xonlyblind_previous_bool = t_post_win_bool & (
+                                player_f.outcomes[game_num][str(int(hand_num)-1)] != (big_blind + small_blind))
+                    t_neutral_xonlyblind_bool = (not t_post_loss_xonlyblind_previous_bool) & (not t_post_win_outcome_xonlyblind_previous_bool)
                 except KeyError:
                     t_post_loss_bool = None
+                    t_post_win_bool = None
+                    t_neutral_bool = None
+                    t_post_loss_xonlyblind_previous_bool = None
+                    t_post_win_outcome_xonlyblind_previous_bool = None
+                    t_neutral_xonlyblind_bool = None
 
                 # Class ChoiceSituaiton accepts additional specification of "ordered" or "dominant" gamble type,
                 # currently do not have ordered vs. dominant type working
@@ -209,7 +244,13 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
                                                      slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
                                                      stack_rank=player_f.stack_ranks[game_num][hand_num],
                                                      seat=player_f.seat_numbers[game_num][hand_num],
-                                                     post_loss=t_post_loss_bool)
+                                                     post_loss=t_post_loss_bool,
+                                                     post_win=t_post_win_bool,
+                                                     post_neutral=t_neutral_bool,
+                                                     post_loss_excl_blind_only=t_post_loss_xonlyblind_previous_bool,
+                                                     post_win_excl_blind_only=t_post_win_outcome_xonlyblind_previous_bool,
+                                                     post_neutral_or_blind_only=t_neutral_xonlyblind_bool
+                                                     )
 
                 choice_situations_f.append(t_choice_situation)
 
@@ -290,28 +331,48 @@ def generate_synthetic_data():
     return reformat_choice_situations_for_model(master_choice_situations_list)
 
 
-def reformat_choice_situations_for_model(choice_situations):
+def reformat_choice_situations_for_model(choice_situations_f):
     # create dictionary of option params
-    choice_param_dictionary = {rank: {seat: {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations])} for rank in set([cs.slansky_strength for cs in choice_situations])}
-    for cs in choice_situations:
+    choice_param_dictionary_f = {rank: {seat: {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations_f])} for rank in set([cs.slansky_strength for cs in choice_situations_f])}
+    for cs in choice_situations_f:
         for i in range(len(cs.option_names)):
-            choice_param_dictionary[cs.slansky_strength][cs.seat]['params'].update(
+            choice_param_dictionary_f[cs.slansky_strength][cs.seat]['params'].update(
                 {cs.option_names[i]: list(cs.options[i].outcomes.values())})
-        choice_param_dictionary[cs.slansky_strength][cs.seat]['n_chosen'][cs.choice] += 1
+        choice_param_dictionary_f[cs.slansky_strength][cs.seat]['n_chosen'][cs.choice] += 1
+
+    # if no observations exist for a given rank and seat, drop the dictionary item since we have no information with which to estimate the model
+    t_drop_keys = list()
+    for rank in choice_param_dictionary_f.keys():
+        for seat in choice_param_dictionary_f[rank].keys():
+            if sum(choice_param_dictionary_f[rank][seat]['n_chosen'].values()) == 0:
+                t_drop_keys.append((rank, seat))
+                print('No observations for rank %s seat %s' % (rank, seat))
+    for pair in t_drop_keys:
+        choice_param_dictionary_f[pair[0]].pop(pair[1])
+
+    t_rank_drop_keys = list()
+    for rank in choice_param_dictionary_f.keys():
+        if len(choice_param_dictionary_f[rank]) == 0:
+            t_rank_drop_keys.append(rank)
+            print('No observations for rank %s for any seat' % rank)
+    for rank in t_rank_drop_keys:
+        choice_param_dictionary_f.drop(rank)
+
+    del t_drop_keys, t_rank_drop_keys
 
         ##### need to revise function to evaluate ordered gamble or not
-        # choice_param_dictionary[cs.slansky_strength][cs.seat]['CRRA_gamble_type'] = cs.CRRA_ordered_gamble_type['type']
+        # choice_param_dictionary_f[cs.slansky_strength][cs.seat]['CRRA_gamble_type'] = cs.CRRA_ordered_gamble_type['type']
         # if cs.CRRA_ordered_gamble_type['type'] == 'ordered':
-        #     choice_param_dictionary[cs.slansky_strength][cs.seat]['omega_equiv_util'] = cs.CRRA_ordered_gamble_type['cross points']
+        #     choice_param_dictionary_f[cs.slansky_strength][cs.seat]['omega_equiv_util'] = cs.CRRA_ordered_gamble_type['cross points']
         #     # compare utilities as low levels of risk aversion to determine which is risker gamble
-        #     u_play = calc_CRRA_utility(choice_param_dictionary[cs.slansky_strength][cs.seat]['params']['play'], cs.CRRA_ordered_gamble_type['cross points'][0] / 2)
-        #     u_fold = calc_CRRA_utility(choice_param_dictionary[cs.slansky_strength][cs.seat]['params']['fold'], cs.CRRA_ordered_gamble_type['cross points'][0] / 2)
+        #     u_play = calc_CRRA_utility(choice_param_dictionary_f[cs.slansky_strength][cs.seat]['params']['play'], cs.CRRA_ordered_gamble_type['cross points'][0] / 2)
+        #     u_fold = calc_CRRA_utility(choice_param_dictionary_f[cs.slansky_strength][cs.seat]['params']['fold'], cs.CRRA_ordered_gamble_type['cross points'][0] / 2)
         #     if u_play > u_fold:
-        #         choice_param_dictionary[cs.slansky_strength][cs.seat]['CRRA_risky_gamble'] = 'play'
+        #         choice_param_dictionary_f[cs.slansky_strength][cs.seat]['CRRA_risky_gamble'] = 'play'
         #     else:
-        #         choice_param_dictionary[cs.slansky_strength][cs.seat]['CRRA_risky_gamble'] = 'fold'
+        #         choice_param_dictionary_f[cs.slansky_strength][cs.seat]['CRRA_risky_gamble'] = 'fold'
 
-    return choice_param_dictionary
+    return choice_param_dictionary_f
 
 
 def calc_CRRA_utility(outcomes, omega):
@@ -322,7 +383,6 @@ def calc_CRRA_utility(outcomes, omega):
             if omega == 1:
                 return np.log(payoff)
             else:
-                # take out signs / abs #######
                 return (payoff ** (1 - omega)) / (1 - omega)
     return sum([o['prob'] * calc_outcome_util(payoff=o['payoff'], omega=omega) for o in outcomes])
 
@@ -352,37 +412,7 @@ def print_auditing_calcs(t_choice_param_dictionary, t_kappa, t_lambda, t_omega):
             print('\n')
 
 
-# ====== Run model fitting =======
-
-# ---- actual data ----
-choice_situations = generate_choice_situations(player_f=players[select_player_index], game_hand_index_f=game_hand_player_index, payoff_dict_f=payoff_dict, prob_dict_f=prob_dict)
-choice_param_dictionary = reformat_choice_situations_for_model(choice_situations)
-
-# ---- synthetic test data -----
-# kappa_actual = 0.034    # kappa_RPM = 0.051
-# lambda_actual = 0.275   # lambda_RPM = 2.495
-# omega_actual = 0.661    # omega_RPM = 0.752
-#
-# choice_param_dictionary = generate_synthetic_data()
-# print_auditing_calcs(choice_param_dictionary, t_kappa=0.034, t_lambda=0.275, t_omega=0.661)
-
-# ----- Model fitting
-test = RandomUtilityModel(choice_param_dictionary)
-test.negLL_RUM([.034, 0.275, 0.661])
-test.negLL_RUM([.1, 2, 0.5])
-lb = {'kappa': 0.001, 'lambda': 0.0001, 'omega': 0.001}
-ub = {'kappa': 1, 'lambda': 3, 'omega': 2}
-test.fit(init_params=[0.05, .5, .5], LL_form='RUM',
-         method='l-bfgs-b',
-         bounds=Bounds(lb=[lb[test.param_names_f[i]] for i in range(len(test.param_names_f))], ub=[ub[test.param_names_f[i]] for i in range(len(test.param_names_f))]),
-         tol=1e-12,
-         options={'disp': True, 'maxiter': 500})    # bounds=Bounds(lb=[0.0001, 0.0001, 0], ub=[10, 10, 15]),
-test.print()
-# print('actual: %s' % [kappa_actual, lambda_actual, omega_actual])
-
-
-# MULTISTART
-def run_multistart(nstart_points, t_lb, t_ub, model_object):
+def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, save_path=os.getcwd()):
     initial_points = {'kappa': np.random.uniform(low=t_lb['kappa'], high=t_ub['kappa'], size=nstart_points),
                       'lambda': np.random.uniform(low=t_lb['lambda'], high=t_ub['lambda'], size=nstart_points),
                       'omega': np.random.uniform(low=t_lb['omega'], high=t_ub['omega'], size=nstart_points)}
@@ -399,42 +429,185 @@ def run_multistart(nstart_points, t_lb, t_ub, model_object):
                          LL_form='RUM',
                          method='l-bfgs-b',
                          bounds=Bounds(lb=[t_lb[model_object.param_names_f[i]] for i in range(len(model_object.param_names_f))], ub=[t_ub[model_object.param_names_f[i]] for i in range(len(model_object.param_names_f))]),
-                         tol=1e-12,
-                         options={'disp': False, 'maxiter': 500})  # bounds=Bounds(lb=[0.0001, 0.0001, 0], ub=[10, 10, 15]),)
-        results_list.append(copy.deepcopy(model_object.results))
-    est_dict = {model_object.param_names_f[0]: [],
-                model_object.param_names_f[1]: [],
-                model_object.param_names_f[2]: []}
-    for r in range(len(results_list)):
-        for p in range(len(model_object.param_names_f)):
-            est_dict[model_object.param_names_f[p]].append(results_list[r].x[p])
+                         options={'disp': False, 'maxiter': 500, 'ftol': 1e-10, 'gtol': 1e-5})   # tol=1e-8,
+        results_list.append({'initial_point': {model_object.param_names_f[0]: initial_points[model_object.param_names_f[0]][i],
+                                         model_object.param_names_f[1]: initial_points[model_object.param_names_f[1]][i],
+                                         model_object.param_names_f[2]: initial_points[model_object.param_names_f[2]][i]},
+                             'results': copy.deepcopy(model_object.results)})
 
-        if results_list[r].x[0] != 1:
-            print('%s: %s' % ([initial_points[model_object.param_names_f[0]][r],
-                               initial_points[model_object.param_names_f[1]][r],
-                               initial_points[model_object.param_names_f[2]][r]], results_list[r].x))
+        if save_iter is not False:
+            if (((i + 1) % save_iter) == 0) and (i > 0):
+                with open(os.path.join(save_path,
+                                       'multistart_results_iter' + str(i + 1 - save_iter) + 't' + str(i)), 'wb') as ff:
+                    pickle.dump(results_list, ff)  # pickle.dump(results_list[(i + 1 - save_iter):(i + 1)], ff)
+                    results_list = list()
+
+
+    # --- alternative storage format, currently unused
+    # est_dict = {model_object.param_names_f[0]: [],
+    #             model_object.param_names_f[1]: [],
+    #             model_object.param_names_f[2]: []}
+    # for r in range(len(results_list)):
+    #     for p in range(len(model_object.param_names_f)):
+    #         est_dict[model_object.param_names_f[p]].append(results_list[r].x[p])
+    #
+    #     if results_list[r].x[0] != 1:
+    #         print('%s: %s' % ([initial_points[model_object.param_names_f[0]][r],
+    #                            initial_points[model_object.param_names_f[1]][r],
+    #                            initial_points[model_object.param_names_f[2]][r]], results_list[r].x))
 
     return results_list
 
 
-select_results = run_multistart(nstart_points=1000, t_lb=lb, t_ub=ub, model_object=test)
-est_kappa = list()
-est_lambda = list()
-est_omega = list()
-for r in select_results:
-    kappa_not_at_bounds = (r.x[test.param_names_f.index('kappa')] != lb['kappa']) and (r.x[test.param_names_f.index('kappa')] != ub['kappa'])
-    lambda_not_at_bounds = (r.x[test.param_names_f.index('lambda')] != lb['lambda']) and (r.x[test.param_names_f.index('lambda')] != ub['lambda'])
-    omega_not_at_bounds = (r.x[test.param_names_f.index('omega')] != lb['omega']) and (r.x[test.param_names_f.index('omega')] != ub['omega'])
-    if kappa_not_at_bounds and lambda_not_at_bounds and omega_not_at_bounds:
-        est_kappa.append(r.x[test.param_names_f.index('kappa')])
-        est_lambda.append(r.x[test.param_names_f.index('lambda')])
-        est_omega.append(r.x[test.param_names_f.index('omega')])
-    del kappa_not_at_bounds, lambda_not_at_bounds, omega_not_at_bounds
+def parse_multistart(multistart_results, kappa_index, lambda_index, omega_index):
+    t_param_list_dicts = list()
+    t_obs_list_dicts = list()
+    for r in multistart_results:
+        est_run_id = binascii.b2a_hex(os.urandom(8))
+        try:
+            t_second_order_cond = pos_def_hess_TF(np.linalg.inv(r['results']['hess_inv'].todense()))
+        except:
+            t_second_order_cond = None
+        t_param_list_dicts.append({'est_run_id': est_run_id,
+                                   'kappa': r['results'].x[kappa_index],
+                                   'lambda': r['results'].x[lambda_index],
+                                   'omega': r['results'].x[omega_index],
+                                   'message': r['results'].message,
+                                   'pos_def_hess': t_second_order_cond,
+                                   'kappa_initial': r['initial_point']['kappa'],
+                                   'lambda_initial': r['initial_point']['lambda'],
+                                   'omega_initial': r['initial_point']['omega']
+                                   })
+        for rank in choice_param_dictionary.keys():
+            for seat in choice_param_dictionary[rank].keys():
+                t_util_play = calc_CRRA_utility(choice_param_dictionary[rank][seat]['params']['play'],
+                                                r['results'].x[omega_index])
+                t_util_fold = calc_CRRA_utility(choice_param_dictionary[rank][seat]['params']['fold'],
+                                                r['results'].x[omega_index])
+                t_obs_list_dicts.append(
+                    {'est_run_id': est_run_id,
+                     'rank': rank,
+                     'seat': seat,
+                     'actual_share': choice_param_dictionary[rank][seat]['n_chosen']['play'] / (
+                                 choice_param_dictionary[rank][seat]['n_chosen']['play'] +
+                                 choice_param_dictionary[rank][seat]['n_chosen']['fold']),
+                     'pred_share': calc_RUM_prob(t_util_play, [t_util_play, t_util_fold],
+                                                 r['results'].x[lambda_index],
+                                                 r['results'].x[kappa_index]),
+                     'util_play': t_util_play,
+                     'util_fold': t_util_fold,
+                     'conv_flag': r['results'].status
+                     }
+                )
 
-import matplotlib.pyplot as plt
-plt.hist(est_kappa)
-plt.hist(est_lambda)
-plt.hist(est_omega)
+    return t_param_list_dicts, t_obs_list_dicts
+
+
+def pos_def_hess_TF(hess):
+    return all(np.sign(np.linalg.eig(hess)[0]) > 0)
+
+
+# ====== Import data ======
+# ---- actual data ----
+choice_situations = generate_choice_situations(player_f=players[select_player_index], game_hand_index_f=game_hand_player_index, payoff_dict_f=payoff_dict, prob_dict_f=prob_dict)
+
+#######
+# ---- debugging, can delete ------
+t_counts = {'win': 0, 'loss': 0, 'post_neutral': 0, 'loss_no_blind': 0, 'win_no_blind': 0, 'post_neutral_or_blind_only': 0}
+for cs in choice_situations:
+    # if cs.post_loss or cs.post_win or cs.post_loss_excl_blind_only or cs.post_win_excl_blind_only:
+    #     print(k, v)
+    #     break
+    if cs.post_loss:
+        t_counts['loss'] += 1
+    if cs.post_win:
+        t_counts['win'] += 1
+    if cs.post_neutral:
+        t_counts['post_neutral'] += 1
+    if cs.post_loss_excl_blind_only:
+        t_counts['loss_no_blind'] += 1
+    if cs.post_win_excl_blind_only:
+        t_counts['win_no_blind'] += 1
+    if cs.post_neutral_or_blind_only:
+        t_counts['post_neutral_or_blind_only'] += 1
+    # print('%s %s' % (k, v))
+for k, v in t_counts.items():
+    print('%s: %s' % (k, v))
+#######
+
+# ---- preprocess: partition data and sub-sample -----
+if select_case != 'all':
+    t_candidates = [cs for cs in choice_situations if cs.__getattribute__(select_case)]
+else:
+    t_candidates = choice_situations
+choice_param_dictionary = reformat_choice_situations_for_model(random.sample(t_candidates, round(fraction_of_data_to_use_for_estimation * len(t_candidates))))
+del t_candidates
+
+# ---- synthetic test data -----
+# kappa_actual = 0.034    # kappa_RPM = 0.051
+# lambda_actual = 0.275   # lambda_RPM = 2.495
+# omega_actual = 0.661    # omega_RPM = 0.752
+#
+# choice_param_dictionary = generate_synthetic_data()
+# print_auditing_calcs(choice_param_dictionary, t_kappa=0.034, t_lambda=0.275, t_omega=0.661)
+
+# ====== Run model fitting =======
+# --- create model object
+model = RandomUtilityModel(choice_param_dictionary)
+
+#######
+# ---- debugging / audititing, can delete
+t_sum = list()
+for rank in model.data_f.keys():
+    for seat in model.data_f[rank].keys():
+        t_sum.append(sum(model.data_f[rank][seat]['n_chosen'].values()))
+print('Total observations in choice_param_dictionary: %d' % sum(t_sum))
+del t_sum
+######
+
+# --- fit one model
+model.negLL_RUM([.034, 0.275, 0.661])
+model.negLL_RUM([.1, 2, 0.5])
+lb = {'kappa': 0.000, 'lambda': 0.0000, 'omega': 0.000}
+ub = {'kappa': .5, 'lambda': 3, 'omega': 2}
+model.fit(init_params=[0.05, .5, .5], LL_form='RUM',
+         method='l-bfgs-b',
+         bounds=Bounds(lb=[lb[model.param_names_f[i]] for i in range(len(model.param_names_f))], ub=[ub[model.param_names_f[i]] for i in range(len(model.param_names_f))]),
+         tol=1e-12,
+         options={'disp': True, 'maxiter': 500})    # bounds=Bounds(lb=[0.0001, 0.0001, 0], ub=[10, 10, 15]),
+model.print()
+
+# --- run multistart
+# run and save
+select_results = run_multistart(nstart_points=num_multistarts, t_lb=lb, t_ub=ub, model_object=model, save_iter=save_iter, save_path=save_path)
+
+# load from saved
+select_results = list()
+for fn in [f for f in os.listdir(save_path) if os.path.isfile(os.path.join(save_path, f)) if f[0] != '.']:  #os.listdir(save_path):
+    with open(os.path.join(save_path, fn), 'rb') as f:
+        select_results = select_results + pickle.load(f)
+
+##########
+# ---- debugging / auditing, can delete
+i = 0
+eps = 1e-4
+for r in select_results:
+    if (r['results'].x[0] > (lb['kappa'] + eps)) & (r['results'].x[0] < (ub['kappa'] - eps)) & \
+            (r['results'].x[1] > (lb['lambda'] + eps)) & (r['results'].x[1] < (ub['lambda'] - eps)) & \
+            (r['results'].x[2] > (lb['omega'] + eps)) & (r['results'].x[2] < (ub['omega'] - eps)):    # & \
+            # (r['results'].message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'):
+        print('%d %s' % (i, r['results'].x))
+    i += 1
+###########
+
+list_dict_params, list_dict_obs = parse_multistart(select_results, kappa_index=model.param_names_f.index('kappa'), lambda_index=model.param_names_f.index('lambda'), omega_index=model.param_names_f.index('omega'))
+
+# ====== SAVE TO CSV FOR TABLEAU EXAMINATION =======
+if save_TF:
+    pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player.lower() + '_multistart_params_' + select_case + '.csv'))
+    pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
+
+#################
 
 # ---------- ARCHIVE -------
 # data frame for sanity checking / working
