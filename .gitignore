@@ -114,3 +114,4 @@ python_hand_data.pickle
 *.json
 *.DS_Store
 *.xlsx
+output/

@@ -2,6 +2,8 @@
 import pandas as pd
 from scipy.stats import norm
 import numpy as np
+import copy
+
 
 def create_game_hand_index(player_f):
     game_hand_index_f = dict()
@@ -96,9 +98,9 @@ def calc_prob_winning_slansky_rank(games_f, slansky_groups_f=None, seat_groups_f
                 slansky_prob_dict_f[str(rank)].update({str(seat): {}})
                 slansky_payoff_dict_f[str(rank)].update({str(seat): {}})
                 for stack in range(1, t_max_stack_rank_f + 1):
-                    slansky_prob_dict_f[str(rank)][str(seat)].update({str(stack): {'win': 0, 'count': 0}})
+                    slansky_prob_dict_f[str(rank)][str(seat)].update({str(stack): {'win': 0, 'count': 0, 'play_count': 0}})
                     slansky_payoff_dict_f[str(rank)][str(seat)].update(
-                        {str(stack): {'win_sum': 0, 'loss_sum': 0, 'win_count': 0, 'loss_count': 0}})
+                        {str(stack): {'win_sum': 0, 'loss_sum': 0, 'neutral_sum': 0, 'win_count': 0, 'loss_count': 0, 'neutral_count': 0}})
                     # print('rank %d, seat %d, stack %d' % (rank, seat, stack))
         return slansky_prob_dict_f, slansky_payoff_dict_f
     
@@ -116,15 +118,35 @@ def calc_prob_winning_slansky_rank(games_f, slansky_groups_f=None, seat_groups_f
                     # wins / losses
                     if games_ff[g_num].hands[h_num].outcomes[p] > 0:
                         slansky_prob_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['win'] += 1
+                        slansky_prob_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['play_count'] += 1
                         slansky_payoff_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['win_sum'] += games_ff[g_num].hands[h_num].outcomes[p]
                         slansky_payoff_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['win_count'] += 1
-
                     elif games_ff[g_num].hands[h_num].outcomes[p] < 0:
+                        slansky_prob_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['play_count'] += 1
                         slansky_payoff_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['loss_sum'] += games_ff[g_num].hands[h_num].outcomes[p]
                         slansky_payoff_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['loss_count'] += 1
+                    elif games_ff[g_num].hands[h_num].outcomes[p] == 0:
+                        slansky_payoff_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['neutral_sum'] += games_ff[g_num].hands[h_num].outcomes[p]
+                        slansky_payoff_dict_ff[str(games_ff[g_num].hands[h_num].odds[p]['slansky'])][t_seat_num][t_stack_rank]['neutral_count'] += 1
+
                     # note: ignores case where player has 0 outcome, meaning opted to fold
         del g_num, h_num, p
         return slansky_prob_dict_ff, slansky_payoff_dict_ff
+
+    def get_payoff_counts(games_ff):
+        # if plot enabled, can examine distribuiton of payoffs
+        payoff_counts_dict = dict()
+        payoff_list = list()
+        for g_num in games_ff.keys():
+            for h_num in games_ff[g_num].hands.keys():
+                for p in games_ff[g_num].hands[h_num].outcomes.keys():
+                    payoff_list.append(games_ff[g_num].hands[h_num].outcomes[p])
+                    try:
+                        payoff_counts_dict[games_ff[g_num].hands[h_num].outcomes[p]] += 1
+                    except KeyError:
+                        payoff_counts_dict[games_ff[g_num].hands[h_num].outcomes[p]] = 1
+        # plt.scatter([amt for amt in payoff_counts_dict.keys() if (amt != 0) & ((amt < -500) or (amt > 500))],
+        #             [freq for amt, freq in payoff_counts_dict.items() if  (amt != 0) & ((amt < -500) or (amt > 500))])
 
     def marginal_aggregation(slansky_prob_dict_ff, slansky_payoff_dict_ff,
                              slansky_groups_ff=None,
@@ -134,253 +156,101 @@ def calc_prob_winning_slansky_rank(games_f, slansky_groups_f=None, seat_groups_f
         # If groupings are not provided, i.e. count slansky ranks 1, 2, and 3 as one aggregate group, then treat each rank as an individual
         if slansky_groups_ff is None:
             slansky_groups_ff = [[k] for k in slansky_prob_dict_ff.keys()]
+        # elif len(slansky_groups_ff) == 1:
+        #     slansky_groups_ff = [slansky_groups_ff]
+
         if seat_groups_ff is None:
             seat_groups_ff = [[str(z)] for z in range(1, max([max([int(x) for x in d1.keys()]) for d1 in slansky_prob_dict_ff.values()]) + 1)]
+        # elif len(seat_groups_ff) == 1:
+        #     seat_groups_ff = [seat_groups_ff]
+
         if stack_groups_ff is None:
             stack_groups_ff = [[str(z)] for z in range(1, max(max([max([max([int(x) for x in d2.keys()]) for d2 in d1.values()] for d1 in slansky_prob_dict_ff.values())])) + 1)]
+        # elif len(stack_groups_ff) == 1:
+        #     stack_groups_ff = [stack_groups_ff]
 
         # create output dictionaries
-        slansky_prob_dict_out_f = dict(zip([''.join(x) for x in slansky_groups_ff], [dict(zip([''.join(y) for y in seat_groups_ff], [dict(zip([''.join(z) for z in stack_groups_ff], [dict() for i in stack_groups_ff])) for j in seat_groups_ff])) for k in slansky_groups_ff]))
-        slansky_payoff_dict_out_f = dict(zip([''.join(x) for x in slansky_groups_ff], [dict(zip([''.join(y) for y in seat_groups_ff], [dict(zip([''.join(z) for z in stack_groups_ff], [dict() for i in stack_groups_ff])) for j in seat_groups_ff])) for k in slansky_groups_ff]))
+        slansky_prob_dict_out_f = dict(zip([''.join(x) for x in slansky_groups_ff],
+                                           [dict(zip([''.join(y) for y in seat_groups_ff],
+                                                     [dict(zip([''.join(z) for z in stack_groups_ff],
+                                                               [dict()] * len(stack_groups_ff)))
+                                                      ] * len(seat_groups_ff)))
+                                            ] * len(slansky_groups_ff)))
+        slansky_payoff_dict_out_f = copy.deepcopy(slansky_prob_dict_out_f)
+        # slansky_payoff_dict_out_f = dict(zip([''.join(x) for x in slansky_groups_ff], [dict(zip([''.join(y) for y in seat_groups_ff], [dict(zip([''.join(z) for z in stack_groups_ff], [dict() for i in stack_groups_ff])) for j in seat_groups_ff])) for k in slansky_groups_ff]))
 
-        for rank in slansky_groups_ff:  ##### slansky_prob_dict_ff.keys():
-            slansky_prob_dict_out_f[''.join(rank)] = {'win': 0, 'count': 0}
-            slansky_payoff_dict_out_f[''.join(rank)] = {'win_sum': 0, 'loss_sum': 0, 'win_count': 0, 'loss_count': 0}
-            for seat in seat_groups_ff:     ##### slansky_prob_dict_ff[rank].keys():
-                slansky_prob_dict_out_f[''.join(rank)][''.join(seat)] = {'win': 0, 'count': 0}
-                slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)] = {'win_sum': 0, 'loss_sum': 0, 'win_count': 0, 'loss_count': 0}
-                for stack in stack_groups_ff:   ##### slansky_prob_dict_ff[rank][seat].keys():
-                    t_stack_count = sum([slansky_prob_dict_ff[x][y][z]['count'] for z in stack for y in seat for x in rank])  # t_seat_count += slansky_prob_dict_ff[rank][seat][stack]['count']
-                    t_stack_win = sum([slansky_prob_dict_ff[x][y][z]['win'] for z in stack for y in seat for x in rank])    # slansky_prob_dict_ff[rank][seat][stack]['win']
-                    t_stack_win_sum = sum([slansky_payoff_dict_ff[x][y][z]['win_sum'] for z in stack for y in seat for x in rank])  # slansky_payoff_dict_ff[rank][seat][stack]['win_sum']
-                    t_stack_loss_sum = sum([slansky_payoff_dict_ff[x][y][z]['loss_sum'] for z in stack for y in seat for x in rank])    # slansky_payoff_dict_ff[rank][seat][stack]['loss_sum']
-                    t_stack_win_count = sum([slansky_payoff_dict_ff[x][y][z]['win_count'] for z in stack for y in seat for x in rank])    # slansky_payoff_dict_ff[rank][seat][stack]['win_count']
-                    t_stack_loss_count = sum([slansky_payoff_dict_ff[x][y][z]['loss_count'] for z in stack for y in seat for x in rank])   # slansky_payoff_dict_ff[rank][seat][stack]['loss_count']
+        for rank in slansky_groups_ff:
+            slansky_prob_dict_out_f[''.join(rank)] = {'win': 0, 'count': 0, 'play_count': 0}
+            slansky_payoff_dict_out_f[''.join(rank)] = {'win_sum': 0, 'loss_sum': 0, 'win_count': 0, 'loss_count': 0, 'neutral_sum': 0, 'neutral_count': 0}
+            for seat in seat_groups_ff:
+                slansky_prob_dict_out_f[''.join(rank)][''.join(seat)] = {'win': 0, 'count': 0, 'play_count': 0}
+                slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)] = {'win_sum': 0, 'loss_sum': 0, 'neutral_sum': 0, 'win_count': 0, 'loss_count': 0, 'neutral_count': 0}
+                for stack in stack_groups_ff:
+                    t_stack_count = sum([slansky_prob_dict_ff[x][y][z]['count'] for z in stack for y in seat for x in rank])
+                    t_stack_win = sum([slansky_prob_dict_ff[x][y][z]['win'] for z in stack for y in seat for x in rank])
+                    t_stack_play_count = sum([slansky_prob_dict_ff[x][y][z]['play_count'] for z in stack for y in seat for x in rank])
+
+                    t_stack_win_sum = sum([slansky_payoff_dict_ff[x][y][z]['win_sum'] for z in stack for y in seat for x in rank])
+                    t_stack_loss_sum = sum([slansky_payoff_dict_ff[x][y][z]['loss_sum'] for z in stack for y in seat for x in rank])
+                    t_stack_neutral_sum = sum([slansky_payoff_dict_ff[x][y][z]['neutral_sum'] for z in stack for y in seat for x in rank])
+
+                    t_stack_win_count = sum([slansky_payoff_dict_ff[x][y][z]['win_count'] for z in stack for y in seat for x in rank])
+                    t_stack_loss_count = sum([slansky_payoff_dict_ff[x][y][z]['loss_count'] for z in stack for y in seat for x in rank])
+                    t_stack_neutral_count = sum([slansky_payoff_dict_ff[x][y][z]['neutral_count'] for z in stack for y in seat for x in rank])
 
                     # aggregate at slansky-seat-stack level
-                    slansky_prob_dict_out_f[''.join(rank)][''.join(seat)][''.join(stack)] = {'win': t_stack_win, 'count': t_stack_count} # slansky_prob_dict_ff[rank][seat].update({'win': t_seat_win, 'count': t_seat_count})
-                    slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)][''.join(stack)] = {'win_sum': t_stack_win_sum, 'loss_sum': t_stack_loss_sum, 'win_count': t_stack_win_count, 'loss_count': t_stack_loss_count} # slansky_payoff_dict_ff[rank][seat].update({'win_sum': t_seat_win_sum, 'loss_sum': t_seat_loss_sum, 'win_count': t_seat_win_count, 'loss_count': t_seat_loss_count})
+                    slansky_prob_dict_out_f[''.join(rank)][''.join(seat)][''.join(stack)] = {'win': t_stack_win, 'count': t_stack_count, 'play_count': t_stack_play_count}
+                    slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)][''.join(stack)] = {'win_sum': t_stack_win_sum, 'loss_sum': t_stack_loss_sum, 'neutral_sum': t_stack_neutral_sum,
+                                                                                               'win_count': t_stack_win_count, 'loss_count': t_stack_loss_count, 'neutral_count': t_stack_neutral_count}
 
                     # aggregate at slansky-seat level
                     slansky_prob_dict_out_f[''.join(rank)][''.join(seat)].update({'win': slansky_prob_dict_out_f[''.join(rank)][''.join(seat)]['win'] + t_stack_win,
-                                                                                  'count': slansky_prob_dict_out_f[''.join(rank)][''.join(seat)]['count'] + t_stack_count})
+                                                                                  'count': slansky_prob_dict_out_f[''.join(rank)][''.join(seat)]['count'] + t_stack_count,
+                                                                                  'play_count': slansky_prob_dict_out_f[''.join(rank)][''.join(seat)]['play_count'] + t_stack_play_count})
                     slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)].update({'win_sum': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['win_sum'] + t_stack_win_sum,
                                                                                     'loss_sum': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['loss_sum'] + t_stack_loss_sum,
+                                                                                    'neutral_sum': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['neutral_sum'] + t_stack_neutral_sum,
                                                                                     'win_count': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['win_count'] + t_stack_win_count,
-                                                                                    'loss_count': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['loss_count'] + t_stack_loss_count})
+                                                                                    'loss_count': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['loss_count'] + t_stack_loss_count,
+                                                                                    'neutral_count': slansky_payoff_dict_out_f[''.join(rank)][''.join(seat)]['neutral_count'] + t_stack_neutral_count})
 
                     # aggregate at slansky level
                     slansky_prob_dict_out_f[''.join(rank)].update({'win': slansky_prob_dict_out_f[''.join(rank)]['win'] + t_stack_win,
-                                                                   'count': slansky_prob_dict_out_f[''.join(rank)]['count'] + t_stack_count})
+                                                                   'count': slansky_prob_dict_out_f[''.join(rank)]['count'] + t_stack_count,
+                                                                   'play_count': slansky_prob_dict_out_f[''.join(rank)]['play_count'] + t_stack_play_count})
                     slansky_payoff_dict_out_f[''.join(rank)].update({'win_sum': slansky_payoff_dict_out_f[''.join(rank)]['win_sum'] + t_stack_win_sum,
                                                                      'loss_sum': slansky_payoff_dict_out_f[''.join(rank)]['loss_sum'] + t_stack_loss_sum,
+                                                                     'neutral_sum': slansky_payoff_dict_out_f[''.join(rank)]['neutral_sum'] + t_stack_neutral_sum,
                                                                      'win_count': slansky_payoff_dict_out_f[''.join(rank)]['win_count'] + t_stack_win_count,
-                                                                     'loss_count': slansky_payoff_dict_out_f[''.join(rank)]['loss_count'] + t_stack_loss_count})
+                                                                     'loss_count': slansky_payoff_dict_out_f[''.join(rank)]['loss_count'] + t_stack_loss_count,
+                                                                     'neutral_count': slansky_payoff_dict_out_f[''.join(rank)]['neutral_count'] + t_stack_neutral_count,
+                                                                     })
+
+        # CHECK AGGREGATION
+        # add original data together
+        t_win_orig_check = 0
+        t_count_orig_check = 0
+        for rank in [x for x in slansky_prob_dict_ff.keys() if (x != 'win') & (x != 'count') & (x != 'play_count')]:
+            for seat in [x for x in slansky_prob_dict_ff[rank].keys() if (x != 'win') & (x != 'count') & (x != 'play_count')]:
+                for stack in [x for x in slansky_prob_dict_ff[rank][seat].keys() if (x != 'win') & (x != 'count') & (x != 'play_count')]:
+                    t_win_orig_check += slansky_prob_dict_ff[rank][seat][stack]['win']
+                    t_count_orig_check += slansky_prob_dict_ff[rank][seat][stack]['count']
+        print('Original (unaggregated) data had %d wins over %d hands' % (t_win_orig_check, t_count_orig_check))
+
+        # add aggregations together
+        t_win_check = 0
+        t_count_check = 0
+        for rank in [x for x in slansky_prob_dict_out_f.keys() if (x != 'win') & (x != 'count') & (x != 'play_count')]:
+            for seat in [x for x in slansky_prob_dict_out_f[rank].keys() if (x != 'win') & (x != 'count') & (x != 'play_count')]:
+                for stack in [x for x in slansky_prob_dict_out_f[rank][seat].keys() if (x != 'win') & (x != 'count') & (x != 'play_count')]:
+                    t_win_check += slansky_prob_dict_out_f[rank][seat][stack]['win']
+                    t_count_check += slansky_prob_dict_out_f[rank][seat][stack]['count']
+        print('Aggregated data has %d wins over %d hands' % (t_win_check, t_count_check))
+
+        if (t_win_check != t_win_orig_check) or (t_count_check != t_count_orig_check):
+            print('WARNING: AGGREGATED DATA DOES NOT MATCH ORIGINAL DATA, SOME DATA HAS BEEN EXCLUDED IN ERROR.')
 
         return slansky_prob_dict_out_f, slansky_payoff_dict_out_f
-
-    def create_aggregate_prob_payoff_dicts(slansky_prob_dict_ff, slansky_payoff_dict_ff):
-        prob_dict_f = dict()
-        payoff_dict_f = dict()
-        
-        # probabilities
-        for rank in set(slansky_prob_dict_ff.keys()):
-            for r in rank:
-                try:
-                    prob_dict_f.update({r: {'prob_win': slansky_prob_dict_ff[rank]['win'] / slansky_prob_dict_ff[rank]['count']}})
-                except ZeroDivisionError:
-                    pass
-                for seat in set(slansky_prob_dict_ff[rank].keys()) - set(['win', 'count']):
-                    for s in seat:
-                        try:
-                            prob_dict_f[r].update({s: {'prob_win': slansky_prob_dict_ff[rank][seat]['win'] / slansky_prob_dict_ff[rank][seat]['count']}})
-                        except ZeroDivisionError:
-                            pass
-                        for stack in set(slansky_prob_dict_ff[rank][seat].keys()) - set(['win', 'count']):
-                            for t in stack:
-                                try:
-                                    prob_dict_f[r][s].update({t: {'prob_win': slansky_prob_dict_ff[rank][seat][stack]['win'] / slansky_prob_dict_ff[rank][seat][stack]['count']}})
-                                except ZeroDivisionError:
-                                    pass
-
-        # payoffs
-        for rank in set(slansky_payoff_dict_ff.keys()):
-            for r in rank:
-                try:
-                    payoff_dict_f.update({r: {'avg_win': slansky_payoff_dict_ff[rank]['win_sum'] / slansky_payoff_dict_ff[rank]['win_count'],
-                                              'avg_loss': slansky_payoff_dict_ff[rank]['loss_sum'] / slansky_payoff_dict_ff[rank]['loss_count']}})
-                except ZeroDivisionError:
-                    pass
-                for seat in set(slansky_payoff_dict_ff[rank].keys()) - set(['win_sum', 'win_count', 'loss_sum', 'loss_count']):
-                    for s in seat:
-                        try:
-                            payoff_dict_f[r].update({s: {'avg_win': slansky_payoff_dict_ff[rank][seat]['win_sum'] / slansky_payoff_dict_ff[rank][seat]['win_count'],
-                                                         'avg_loss': slansky_payoff_dict_ff[rank][seat]['loss_sum'] / slansky_payoff_dict_ff[rank][seat]['loss_count']}})
-                        except ZeroDivisionError:
-                            pass
-                        for stack in set(slansky_payoff_dict_ff[rank][seat].keys()) - set(['win_sum', 'win_count', 'loss_sum', 'loss_count']):
-                            for t in stack:
-                                try:
-                                    payoff_dict_f[r][s].update({t: {'avg_win': slansky_payoff_dict_ff[rank][seat][stack]['win_sum'] / slansky_payoff_dict_ff[rank][seat][stack]['win_count'],
-                                                                    'avg_loss': slansky_payoff_dict_ff[rank][seat][stack]['loss_sum'] / slansky_payoff_dict_ff[rank][seat][stack]['loss_count']}})
-                                except ZeroDivisionError:
-                                    pass
-        return prob_dict_f, payoff_dict_f
-
-    def format_obs_as_dataframe(games_ff):
-        df_ff = pd.DataFrame(columns=['slansky_rank', 'seat', 'stack_rank', 'preflop_fold_TF', 'payoff'])
-        game_counter = 1
-        tot_num_games = len(games_ff.keys())
-        for g_num in games_ff.keys():
-            print('Processing game %s of %s total'% (game_counter, tot_num_games))
-            for h_num in games_ff[g_num].hands.keys():
-                for p in games_ff[g_num].hands[h_num].players:
-                    df_ff = df_ff.append({'player': p,
-                                          'slansky_rank': str(games_ff[g_num].hands[h_num].odds[p]['slansky']),
-                                          'seat': str(games_ff[g_num].hands[h_num].players.index(p) + 1),
-                                          'stack_rank': str(games_ff[g_num].hands[h_num].start_stack_rank[p]),
-                                          'preflop_fold_TF': (games_ff[g_num].hands[h_num].actions['preflop'][p] == 'f'),
-                                          'payoff': games_ff[g_num].hands[h_num].outcomes[p]},
-                                         ignore_index=True)
-            game_counter += 1
-        return df_ff
-
-    def format_as_dataframe(max_rank_f, max_seat_f, max_stack_rank_f, slansky_prob_dict_ff, slansky_payoff_dict_ff, print_dfs=False):
-        # can probably comment out dfs and store probabilities as dict
-        slansky_dfs_f = list()
-        slansky_payoff_win_dfs_f = list()
-        slansky_payoff_loss_dfs_f = list()
-        for rank in range(1, max_rank_f + 1):
-            t_df1 = pd.DataFrame(index=[str(i) for i in range(1, max_seat_f + 1)], columns=[str(j) for j in range(1, max_stack_rank_f + 1)])
-            t_df2 = pd.DataFrame(index=[str(i) for i in range(1, max_seat_f + 1)], columns=[str(j) for j in range(1, max_stack_rank_f + 1)])
-            t_df3 = pd.DataFrame(index=[str(i) for i in range(1, max_seat_f + 1)], columns=[str(j) for j in range(1, max_stack_rank_f + 1)])
-            for seat in range(1, max_seat_f + 1):
-                for stack in range(1, max_stack_rank_f + 1):
-                    try:
-                        t_df1.loc[str(seat), str(stack)] = slansky_prob_dict_ff[str(rank)][str(seat)][str(stack)]['win'] / slansky_prob_dict_ff[str(rank)][str(seat)][str(stack)]['count']
-                    except ZeroDivisionError:
-                        print('All games, no observations for str(rank) %s str(seat) %s str(stack) %s' % (str(rank), str(seat), str(stack)))
-                    try:
-                        t_df2.loc[str(seat), str(stack)] = slansky_payoff_dict_ff[str(rank)][str(seat)][str(stack)]['win_sum'] / slansky_payoff_dict_ff[str(rank)][str(seat)][str(stack)]['obs_count']
-                    except ZeroDivisionError:
-                        print('Win payoff instances, no observations for str(rank) %s str(seat) %s str(stack) %s' % (str(rank), str(seat), str(stack)))
-                    try:
-                        t_df3.loc[str(seat), str(stack)] = slansky_payoff_dict_ff[str(rank)][str(seat)][str(stack)]['loss_sum'] / slansky_payoff_dict_ff[str(rank)][str(seat)][str(stack)]['obs_count']
-                    except ZeroDivisionError:
-                        print('Loss payoff instances, no observations for str(rank) %s str(seat) %s str(stack) %s' % (str(rank), str(seat), str(stack)))
-            slansky_dfs_f.append(t_df1)
-            slansky_payoff_win_dfs_f.append(t_df2)
-            slansky_payoff_loss_dfs_f.append(t_df3)
-
-            if print_dfs:
-                print('ALL perc. of wins for slansky rank %s by seat (rows) and stack rank (columns):' % rank)
-                print(t_df1)
-                print('\n')
-                del t_df1
-
-                print('Avg. winnings for slansky rank %s by seat (rows) and stack rank (columns):' % rank)
-                print(t_df2)
-                print('\n')
-                del t_df2
-
-                print('Avg. losses for slansky rank %s by seat (rows) and stack rank (columns):' % rank)
-                print(t_df3)
-                print('\n')
-                del t_df3
-
-        # create csv to examine in Tableau
-        t_df = pd.DataFrame(columns=['slansky_rank', 'seat', 'stack_rank', 'count', 'wins', 'percent'])
-        for slansky_rank in range(0, len(slansky_dfs_f)):
-            for seat in range(1, 7):
-                for stack_rank in range(1, 10):
-                    t_df = t_df.append({'slansky_rank': slansky_rank + 1,
-                                        'seat': seat,
-                                        'stack_rank': stack_rank,
-                                        'count': slansky_prob_dict_f[str(slansky_rank + 1)][str(seat)][str(stack_rank)]['count'],
-                                        'wins': slansky_prob_dict_f[str(slansky_rank + 1)][str(seat)][str(stack_rank)]['win'],
-                                        'percent': slansky_dfs_f[slansky_rank].loc[str(seat), str(stack_rank)],
-                                        'avg. winnings': slansky_payoff_win_dfs_f[slansky_rank].loc[str(seat), str(stack_rank)],
-                                        'avg. losses': slansky_payoff_loss_dfs_f[slansky_rank].loc[str(seat), str(stack_rank)]}, ignore_index=True)
-
-        return t_df, slansky_dfs_f, slansky_payoff_win_dfs_f, slansky_payoff_loss_dfs_f
-
-    def format_probs_payoffs_as_dataframe(prob_dict_ff=None, payoff_dict_ff=None):
-        def count_level(d):
-            return max(count_level(v) if isinstance(v, dict) else 0 for v in d.values()) + 1
-
-        if prob_dict_ff is not None:
-            try:
-                # probabilities
-                t_df_prob_f = pd.DataFrame.from_dict({(i, j, k): prob_dict_ff[i][j][k]
-                                                      for i in prob_dict_ff.keys()
-                                                      for j in prob_dict_ff[i].keys()
-                                                      for k in prob_dict_ff[i][j].keys()},
-                                                     orient='index').reset_index()
-                t_df_prob_f[['slansky_rank', 'seat', 'stack_rank']] = pd.DataFrame(t_df_prob_f['index'].tolist(),
-                                                                                   index=t_df_prob_f.index)
-                t_df_prob_f.drop(columns=['index'], inplace=True)
-                t_df_prob_f.rename(columns={0: 'prob_rank'}, inplace=True)
-            except AttributeError:
-                try:
-                    t_df_prob_f = pd.DataFrame.from_dict({(i, j): prob_dict_ff[i][j]
-                                                          for i in prob_dict_ff.keys()
-                                                          for j in prob_dict_ff[i].keys()},
-                                                         orient='index').reset_index()
-                    t_df_prob_f[['slansky_rank', 'seat']] = pd.DataFrame(t_df_prob_f['index'].tolist(),
-                                                                         index=t_df_prob_f.index)
-                    t_df_prob_f.drop(columns=['index'], inplace=True)
-                    t_df_prob_f.rename(columns={0: 'prob_rank_seat'}, inplace=True)
-                except AttributeError:
-                    try:
-                        t_df_prob_f = pd.DataFrame.from_dict({i: prob_dict_ff[i]
-                                                              for i in prob_dict_ff.keys()},
-                                                             orient='index').reset_index()
-                        t_df_prob_f.rename(columns={0: 'prob_rank_seat_stack', 'index': 'slansky_rank'}, inplace=True)
-                    except:
-                        print('Could not process probability dictionaries to data frame')
-                        t_df_prob_f = None
-        else:
-            t_df_prob_f = None
-
-        if payoff_dict_ff is not None:
-            n_levels_ff = count_level(payoff_dict_ff)
-            if n_levels_ff == 4:
-                # payoffs
-                t_df_payoff_f = pd.DataFrame.from_dict({(i, j, k): payoff_dict_ff[i][j][k]
-                                                        for i in payoff_dict_ff.keys()
-                                                        for j in payoff_dict_ff[i].keys()
-                                                        for k in payoff_dict_ff[i][j].keys()},
-                                                       orient='index').reset_index()
-                t_df_payoff_f.rename(columns={'level_0': 'slansky_rank', 'level_1': 'seat', 'level_2': 'stack_rank',
-                                              'avg_win': 'avg_win_rank_seat_stack',
-                                              'avg_loss': 'avg_loss_rank_seat_stack'}, inplace=True)
-            elif n_levels_ff == 3:
-                # payoffs
-                t_df_payoff_f = pd.DataFrame.from_dict({(i, j): payoff_dict_ff[i][j]
-                                                        for i in payoff_dict_ff.keys()
-                                                        for j in payoff_dict_ff[i].keys()},
-                                                       orient='index').reset_index()
-                t_df_payoff_f.rename(columns={'level_0': 'slansky_rank', 'level_1': 'seat',
-                                              'avg_win': 'avg_win_rank_seat',
-                                              'avg_loss': 'avg_loss_rank_seat'},
-                                     inplace=True)
-            elif n_levels_ff == 2:
-                # payoffs
-                t_df_payoff_f = pd.DataFrame.from_dict({i: payoff_dict_ff[i]
-                                                        for i in payoff_dict_ff.keys()},
-                                                       orient='index').reset_index()
-                t_df_payoff_f.rename(columns={'index': 'slansky_rank',
-                                              'avg_win': 'avg_win_rank',
-                                              'avg_loss': 'avg_loss_rank'},
-                                     inplace=True)
-            else:
-                t_df_payoff_f = None
-        else:
-            t_df_payoff_f = None
-        return t_df_prob_f, t_df_payoff_f
-
-    def calc_exp_utility(df_ff, prob_col_name_ff, win_col_name_ff, lose_col_name_ff):
-        return (df_ff[prob_col_name_ff] * df_ff[win_col_name_ff]) + ((1 - df_ff[prob_col_name_ff]) * df_ff[lose_col_name_ff])
 
     max_slansky_rank_f, max_seat_f, max_stack_rank_f = get_max_indices(games_f)
     slansky_prob_dict_f, slansky_payoff_dict_f = preload_dict(max_slansky_rank_f, max_seat_f, max_stack_rank_f)
@@ -390,29 +260,50 @@ def calc_prob_winning_slansky_rank(games_f, slansky_groups_f=None, seat_groups_f
                                                                       seat_groups_ff=seat_groups_f,
                                                                       stack_groups_ff=stack_groups_f
                                                                       )
-    prob_dict, payoff_dict = create_aggregate_prob_payoff_dicts(slansky_prob_dict_f, slansky_payoff_dict_f)
+    # ---- check functions for manual investigations
+    # t_win = 0
+    # t_count = 0
+    # t_play_count = 0
+    # for rank in [x for x in slansky_prob_dict_f.keys() if (x != 'win') and (x != 'count') and (x != 'play_count')]:
+    #     for seat in [x for x in slansky_prob_dict_f[rank].keys() if (x != 'win') and (x != 'count') and (x != 'play_count')]:
+    #         for stack in [x for x in slansky_prob_dict_f[rank][seat] if (x != 'win') and (x != 'count') and (x != 'play_count')]:
+    #             t_win += slansky_prob_dict_f[rank][seat][stack]['win']
+    #             t_count += slansky_prob_dict_f[rank][seat][stack]['count']
+    #             t_play_count += slansky_prob_dict_f[rank][seat][stack]['play_count']
 
-    # ----- Options: write to dataframe for export for Tableau examination -----
-    # ----- Aggregate data frame (counts and sums)
-    # tableau_df_f, _, _, _ = format_as_dataframe(max_slansky_rank_f, max_seat_f, max_stack_rank_f, slansky_prob_dict_f, slansky_payoff_dict_f)
-    # tableau_df_f.to_csv('Slansky odds examination.csv')
-
-    # ---- Disaggregated observations at game-hand-player level
-    # tableau_df2_f = format_obs_as_dataframe(games_f)
-    # # add calculations of probabilities and payoffs
-    # for t_dicts in [(prob_rank_dict, payoff_rank_dict), (prob_rank_seat_dict, payoff_rank_seat_dict), (prob_rank_seat_stack_dict, payoff_rank_seat_stack_dict)]:
-    #     t_prob_df_f, t_payoff_df_f = format_probs_payoffs_as_dataframe(*t_dicts)
-    #     t_comb_dfs_f = t_prob_df_f.merge(t_payoff_df_f, how='left', on=list(set(t_prob_df_f.columns).intersection(set(t_payoff_df_f.columns))))
-    #     tableau_df2_f = tableau_df2_f.merge(t_comb_dfs_f, how='left', on=list(set(tableau_df2_f).intersection(set(t_comb_dfs_f.columns))))
+    # ---- optional dataframe creation for investigation / manipulation
+    # df_f = pd.DataFrame(columns=['rank', 'seat', 'stack', 'win', 'count', 'play_count', 'win_sum', 'loss_sum', 'neutral_sum', 'win_count', 'loss_count', 'neutral_count'])
+    # for rank in [x for x in slansky_prob_dict_f.keys() if (x != 'win') and (x != 'count') and (x != 'play_count')]:
+    #     for seat in [x for x in slansky_prob_dict_f[rank].keys() if (x != 'win') and (x != 'count') and (x != 'play_count')]:
+    #         for stack in [x for x in slansky_prob_dict_f[rank][seat] if (x != 'win') and (x != 'count') and (x != 'play_count')]:
+    #             df_f = df_f.append(pd.Series({'rank': rank, 'seat': seat, 'stack': stack,
+    #                                           'win': slansky_prob_dict_f[rank][seat][stack]['win'],
+    #                                           'count': slansky_prob_dict_f[rank][seat][stack]['count'],
+    #                                           'play_count': slansky_prob_dict_f[rank][seat][stack]['play_count'],
+    #                                           'win_sum': slansky_payoff_dict_f[rank][seat][stack]['win_sum'],
+    #                                           'win_count': slansky_payoff_dict_f[rank][seat][stack]['win_count'],
+    #                                           'loss_sum': slansky_payoff_dict_f[rank][seat][stack]['loss_sum'],
+    #                                           'loss_count': slansky_payoff_dict_f[rank][seat][stack]['loss_count'],
+    #                                           'neutral_sum': slansky_payoff_dict_f[rank][seat][stack]['neutral_sum'],
+    #                                           'neutral_count': slansky_payoff_dict_f[rank][seat][stack]['neutral_count']}),
+    #                                ignore_index=True)
+    # if (df_f.win_sum.sum() + df_f.loss_sum.sum()) != 0:
+    #     print('WARNING: Total amount of wins and losses across all hands are not zero. May be an error if system is closed.')
+    # if sum(df_f.win - df_f.win_count) != 0:
+    #     print('WARNING: number of wins in probability dictionary does not match number of wins in payoff dictionary')
+    # if sum(df_f['count'] - (df_f.win_count + df_f.loss_count + df_f.neutral_count)) != 0:
+    #     print('WARNING: number of wins in probability dictionary does not match number of wins in payoff dictionary')
     #
-    # # add exp utility value of playing (folding is either 0 or blind, which can be inferred by seat number)
-    # for util_colname_f, t_cols in {'play_util_rank_seat_stack': ['prob_rank_seat_stack', 'avg_win_rank_seat_stack', 'avg_loss_rank_seat_stack'],
-    #                                'play_util_rank_seat': ['prob_rank_seat', 'avg_win_rank_seat', 'avg_loss_rank_seat'],
-    #                                'play_util_rank': ['prob_rank', 'avg_win_rank', 'avg_loss_rank']}.items():
-    #     tableau_df2_f[util_colname_f] = calc_exp_utility(tableau_df2_f, *t_cols)
-    # # tableau_df2_f.to_csv('observation_data_frame.csv')
+    # t_group_cols = ['rank', 'seat']
+    # t_output_cols = ['win', 'count', 'play_count', 'win_sum', 'win_count', 'loss_sum', 'loss_count']
+    # df_f_grouped = df_f[t_group_cols + t_output_cols].groupby(t_group_cols).agg(dict(zip(t_output_cols, ['sum'] * len(t_output_cols))))
+    # df_f_grouped['prob_win_cond_play'] = df_f_grouped['win'] / df_f_grouped['play_count']
+    # df_f_grouped['avg_loss_cond_play'] = df_f_grouped['loss_sum'] / df_f_grouped['loss_count']
+    # df_f_grouped['avg_win_cond_play'] = df_f_grouped['win_sum'] / df_f_grouped['win_count']
+    # df_f_grouped['exp_value_play'] = df_f_grouped['prob_win_cond_play'] * df_f_grouped['avg_win_cond_play'] + \
+    #                                  (1 - df_f_grouped['prob_win_cond_play']) * df_f_grouped['avg_loss_cond_play']
 
-    return slansky_prob_dict_f, slansky_payoff_dict_f, prob_dict, payoff_dict
+    return slansky_prob_dict_f, slansky_payoff_dict_f
 
 
 def two_sample_test_prop(p1_f, p2_f, n1_f, n2_f, n_sides_f):
@@ -420,6 +311,15 @@ def two_sample_test_prop(p1_f, p2_f, n1_f, n2_f, n_sides_f):
     z_f = (p1_f - p2_f)/np.sqrt(phat_f * (1 - phat_f) * ((1/n1_f) + (1/n2_f)))
     p_f = (1 - norm.cdf(abs(z_f))) * n_sides_f
     return z_f, p_f
+
+
+def two_sample_test_ind_means(mu1, mu2, s1, s2, n1, n2, n_sides):
+    sample_mean = mu1 - mu2
+    sample_stat_stdev = np.sqrt(((s1**2)/n1) + ((s2**2)/n2))
+    test_stat = sample_mean/sample_stat_stdev
+    p_val = (1 - norm.cdf(abs(test_stat))) * n_sides
+    print('Positive values mean mu1 is greater than mu2')
+    return test_stat, p_val
 
 
 # ------ archive -------

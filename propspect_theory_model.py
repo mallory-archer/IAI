@@ -5,13 +5,16 @@ import pandas as pd
 from statsmodels.base.model import GenericLikelihoodModel
 from prospect_theory_funcs import *
 from assumption_calc_functions import create_game_hand_index
+from assumption_calc_functions import calc_prob_winning_slansky_rank
 # from params import exp_loss_seat_dict, exp_win_seat_dict
 # from params import prob_dict, payoff_dict
-import params
+# import params
 from sklearn.metrics import confusion_matrix
 import pickle
 import matplotlib.pyplot as plt
 import copy
+import os
+import json
 
 
 class Option:
@@ -408,9 +411,9 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
                 # tplay_win_payoff = payoff_dict_f[t_slansky_rank][t_seat_num]['avg_win'] / payoff_units_f
                 # tplay_lose_payoff = payoff_dict_f[t_slansky_rank][t_seat_num]['avg_loss'] / payoff_units_f
                 # --- aggregate to rank-seat-stack level
-                tplay_win_prob = prob_dict_f[t_slansky_rank][t_seat_num][t_stack_rank]['prob_win']
-                tplay_win_payoff = payoff_dict_f[t_slansky_rank][t_seat_num][t_stack_rank]['avg_win'] / payoff_units_f
-                tplay_lose_payoff = payoff_dict_f[t_slansky_rank][t_seat_num][t_stack_rank]['avg_loss'] / payoff_units_f
+                tplay_win_prob = prob_dict_f[t_slansky_rank][t_seat_num]['win'] / prob_dict_f[t_slansky_rank][t_seat_num]['play_count']
+                tplay_win_payoff = payoff_dict_f[t_slansky_rank][t_seat_num]['win_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['win_count']
+                tplay_lose_payoff = payoff_dict_f[t_slansky_rank][t_seat_num]['loss_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['loss_count']
 
                 tfold_win_prob = 0  # cannot win under folding scenario
                 if player_f.blinds[game_num][hand_num]['big']:
@@ -449,7 +452,7 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
             except KeyError:
                 num_choice_situations_dropped += 1
     del game_num, hands, hand_num, t_slansky_rank, t_seat_num
-    print('Dropped a total of %d for KeyErrors \n(likely b/c no observations for combination of slansky/seat/stack \nfor prob and payoff estimates.) \n Kept a total of %d choice situations' % (num_choice_situations_dropped, len(choice_situations_f)))
+    print('Dropped a total of %d for KeyErrors \n(likely b/c no observations for combination of slansky/seat/stack for prob and payoff estimates.) \nKept a total of %d choice situations' % (num_choice_situations_dropped, len(choice_situations_f)))
     return choice_situations_f
 
 
@@ -592,7 +595,7 @@ fail_event_name = 'play'
 select_stack_ranks = [1, 2, 3, 4, 5, 6]
 select_slansky_ranks = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 select_seats = [1, 2, 3, 4, 5, 6]
-select_type_loss_data = ['post_loss']     # 'all', 'post_loss', 'not_post_loss',
+select_type_loss_data = ['all']     # 'all', 'post_loss', 'not_post_loss',
 constrain_beta_TF = False   # setting to True makes the value of beta equal to the value of alpha
 provided_phi = None     # setting to a numerical value will fix phi and remove from model fitting procedure
 
@@ -606,7 +609,7 @@ model_formulation = 'prospect'  # 'utility'
 synthetic_data_TF = False
 
 select_players = ['Pluribus']   # select_players = [p.name for p in players]   # select_players = ['Pluribus']
-select_player_comps = {'Bill': 'Bill', 'Pluribus': 'Pluribus'}  # select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section # select_player_comps = {'Pluribus': [p.name for p in players if ((p.name != 'Pluribus') and (p.name != 'Pluribus'))]}
+select_player_comps = select_player_comps = dict(zip(select_players, select_players))   #### naive setting, should be done intelligently and put in parameters section # select_player_comps = {'Pluribus': [p.name for p in players if ((p.name != 'Pluribus') and (p.name != 'Pluribus'))]}
 
 # ------------- GENERATE SYNTHETIC DATA ----------------------
 if synthetic_data_TF:
@@ -622,6 +625,7 @@ if not synthetic_data_TF:
     games = data['games']
     # df = data['df']
 
+
 # ------------- CALCULATIONS --------------------------------------
 # overwrites select players when creating a synthetic data and names it Pluribus
 if synthetic_data_TF:
@@ -633,9 +637,18 @@ else:
 
 # import probability and payoff dictionaries
 try:
-    prob_dict, payoff_dict = params.load_prob_payoff_dict(slansky_groups, seat_groups, stack_groups)
+    # prob_dict, payoff_dict = params.load_prob_payoff_dict(slansky_groups, seat_groups, stack_groups)
+    # with open(os.path.join('output', 'prob_payoff_dicts.json'), 'w') as f:
+    #     json.dump({'prob_dict': prob_dict, 'payoff_dict': payoff_dict}, f)
+    with open(os.path.join('output', 'prob_payoff_dicts.json'), 'r') as f:
+        t_dict = json.load(f)
+        prob_dict = t_dict['prob_dict']
+        payoff_dict = t_dict['payoff_dict']
+        del t_dict
 except FileNotFoundError:
-    _, _, prob_dict, payoff_dict = params.create_prob_payoff_dict(games, slansky_groups, seat_groups, stack_groups, write_to_file_TF_f=write_prob_payoff_dicts)
+    print('No probability and payoff dictionaries saved down in output folder')
+    #     # _, _, prob_dict, payoff_dict = params.create_prob_payoff_dict(games, slansky_groups, seat_groups, stack_groups, write_to_file_TF_f=write_prob_payoff_dicts)
+    #     prob_dict, payoff_dict = calc_prob_winning_slansky_rank(games, slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None)
 
 # ----------------- CONFIGURE DATA AND RUN ESTIMATION -------------------------
 # create master data sets (choice situations)
@@ -671,8 +684,6 @@ for t_select_player in select_players:
         player_model_results[t_select_player].update({t_type_loss_data: t_model_result})
         del t_model, t_model_result
     del t_type_loss_data
-
-
 
 # ========================== Examine player descriptive stats; comment out or delete later =====================================
 choice_situations = player_choice_situations[select_players[0]]['all']
