@@ -313,6 +313,15 @@ def two_sample_test_prop(p1_f, p2_f, n1_f, n2_f, n_sides_f):
     return z_f, p_f
 
 
+def two_sample_test_ind_means(mu1, mu2, s1, s2, n1, n2, n_sides):
+    sample_mean = mu1 - mu2
+    sample_stat_stdev = np.sqrt(((s1**2)/n1) + ((s2**2)/n2))
+    test_stat = sample_mean/sample_stat_stdev
+    p_val = (1 - norm.cdf(abs(test_stat))) * n_sides
+    print('Positive values mean mu1 is greater than mu2')
+    return test_stat, p_val
+
+
 # ------ archive -------
 # def calc_exp_loss_wins(games_f, small_blind_f=50, big_blind_f=100):
 #     losses_dict = {'small_excl': {'sum': 0, 'count': 0}, 'big_excl': {'sum': 0, 'count': 0},

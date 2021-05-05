@@ -21,12 +21,12 @@ fn_prob_payoff_dict = 'prob_payoff_dicts.json'
 select_player = 'Pluribus'
 select_case = 'post_loss_excl_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
 fraction_of_data_to_use_for_estimation = .8
+save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
 
 # ---- multi start params
 num_multistarts = 100000
-save_TF = True
-save_iter = 5000
-save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
+save_TF = False
+save_iter = 10000
 
 # ----- Calcs -----
 if not save_TF:
@@ -438,7 +438,7 @@ def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, sav
         if save_iter is not False:
             if (((i + 1) % save_iter) == 0) and (i > 0):
                 with open(os.path.join(save_path,
-                                       'multistart_results_iter' + str(i + 1 - save_iter) + 't' + str(i)), 'wb') as ff:
+                                       'multistart_results_iter' + str(i +200000 + 1 - save_iter) + 't' + str(200000 + i)), 'wb') as ff:
                     pickle.dump(results_list, ff)  # pickle.dump(results_list[(i + 1 - save_iter):(i + 1)], ff)
                     results_list = list()
 
@@ -468,15 +468,29 @@ def parse_multistart(multistart_results, kappa_index, lambda_index, omega_index)
             t_second_order_cond = pos_def_hess_TF(np.linalg.inv(r['results']['hess_inv'].todense()))
         except:
             t_second_order_cond = None
+        try:
+            t_sig_results = calc_mle_tstat(r['results'].x, calc_robust_varcov(r['results'].jac, r['results'].hess_inv.todense()))
+            t_stderr = t_sig_results['stderr']
+            t_tstat = t_sig_results['tstat']
+        except:
+            t_stderr = None
+            t_tstat = None
+
         t_param_list_dicts.append({'est_run_id': est_run_id,
-                                   'kappa': r['results'].x[kappa_index],
-                                   'lambda': r['results'].x[lambda_index],
+                                       'kappa': r['results'].x[kappa_index],
+                                       'lambda': r['results'].x[lambda_index],
                                    'omega': r['results'].x[omega_index],
                                    'message': r['results'].message,
                                    'pos_def_hess': t_second_order_cond,
                                    'kappa_initial': r['initial_point']['kappa'],
                                    'lambda_initial': r['initial_point']['lambda'],
-                                   'omega_initial': r['initial_point']['omega']
+                                   'omega_initial': r['initial_point']['omega'],
+                                   'kappa_stderr': t_stderr[kappa_index],
+                                   'lambda_stderr': t_stderr[lambda_index],
+                                   'omega_stderr': t_stderr[omega_index],
+                                   'kappa_tstat': t_tstat[kappa_index],
+                                   'lambda_tstat': t_tstat[lambda_index],
+                                   'omega_tstat': t_tstat[omega_index],
                                    })
         for rank in choice_param_dictionary.keys():
             for seat in choice_param_dictionary[rank].keys():
@@ -505,6 +519,20 @@ def parse_multistart(multistart_results, kappa_index, lambda_index, omega_index)
 
 def pos_def_hess_TF(hess):
     return all(np.sign(np.linalg.eig(hess)[0]) > 0)
+
+
+def calc_robust_varcov(grad, hess):
+    return np.matmul(np.matmul(np.matmul(hess, np.reshape(grad, (len(grad), 1))), np.reshape(grad, (1, len(grad)))), hess)
+
+
+def calc_mle_tstat(param, varcov):
+    if (np.shape(varcov)[0] == len(param)) ^ (np.shape(varcov)[1] == len(param)):
+        t_stderr = varcov
+    elif (np.shape(varcov)[0] == len(param)) and (np.shape(varcov)[1] == len(param)):
+        t_stderr = [np.sqrt(x) for x in np.diag(varcov)]
+    else:
+        print('Error calculating calc_mle_tstat. varcov not of acceptable dimension')
+    return {'param': param, 'stderr': t_stderr, 'tstat': [p/s for p, s in zip(param, t_stderr)]}
 
 
 # ====== Import data ======
@@ -589,15 +617,16 @@ for fn in [f for f in os.listdir(save_path) if os.path.isfile(os.path.join(save_
 
 ##########
 # ---- debugging / auditing, can delete
-i = 0
-eps = 1e-4
-for r in select_results:
-    if (r['results'].x[0] > (lb['kappa'] + eps)) & (r['results'].x[0] < (ub['kappa'] - eps)) & \
-            (r['results'].x[1] > (lb['lambda'] + eps)) & (r['results'].x[1] < (ub['lambda'] - eps)) & \
-            (r['results'].x[2] > (lb['omega'] + eps)) & (r['results'].x[2] < (ub['omega'] - eps)):    # & \
-            # (r['results'].message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'):
-        print('%d %s' % (i, r['results'].x))
-    i += 1
+# i = 0
+# eps = 1e-4
+# for r in select_results:
+#     if (r['results'].x[0] > (lb['kappa'] + eps)) & (r['results'].x[0] < (ub['kappa'] - eps)) & \
+#             (r['results'].x[1] > (lb['lambda'] + eps)) & (r['results'].x[1] < (ub['lambda'] - eps)) & \
+#             (r['results'].x[2] > (lb['omega'] + eps)) & (r['results'].x[2] < (ub['omega'] - eps)) & \
+#             all([x > 1.96 for x in calc_mle_tstat(r['results'].x, calc_robust_varcov(r['results'].jac, r['results'].hess_inv.todense()))['tstat']]):    # & \
+#             # (r['results'].message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'):
+#         print('%d %s' % (i, r['results'].x))
+#     i += 1
 ###########
 
 list_dict_params, list_dict_obs = parse_multistart(select_results, kappa_index=model.param_names_f.index('kappa'), lambda_index=model.param_names_f.index('lambda'), omega_index=model.param_names_f.index('omega'))
@@ -606,6 +635,162 @@ list_dict_params, list_dict_obs = parse_multistart(select_results, kappa_index=m
 if save_TF:
     pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player.lower() + '_multistart_params_' + select_case + '.csv'))
     pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
+
+
+
+
+
+
+# ====== ANALYSIS RESULTS =====
+from assumption_calc_functions import two_sample_test_ind_means
+
+eps_prop_bound = 0.2
+stat_sig_thresh = 1.96
+filters = {'kappa_lb': 1e-8, 'omega_lb': 1e-8, 'lambda_lb': 1e-8, 'kappa_ub': 0.4995, 'omega_at_1': eps_prop_bound,
+           'kappa_at_initial': eps_prop_bound, 'omega_at_initial': eps_prop_bound, 'lambda_at_initial': eps_prop_bound,
+           'omega_stat_sig': stat_sig_thresh, 'lambda_stat_sig': stat_sig_thresh}   # 'kappa_stat_sig': stat_sig_thresh,
+test_param_name = 'kappa'
+
+
+class Scenario:
+    def __init__(self, player, case, filters=None):
+        self.player = player
+        self.case = case
+        self.mean = {'filtered_data': {'kappa': None, 'omega': None, 'lambdap': None}, 'data': {'kappa': None, 'omega': None, 'lambdap': None}}
+        self.sample_std = {'filtered_data': {'kappa': None, 'omega': None, 'lambdap': None}, 'data': {'kappa': None, 'omega': None, 'lambdap': None}}
+        self.n_obs = {'filtered_data': {'kappa': None, 'omega': None, 'lambdap': None}, 'data': {'kappa': None, 'omega': None, 'lambdap': None}}
+        self.data = None
+        self.filters = filters
+        self.filtered_data = None
+        
+    def import_data(self):
+        self.data = pd.read_csv(os.path.join('output', self.player.lower() + '_multistart_params_' + self.case + '.csv')).set_index('est_run_id')
+        self.data.rename(columns={'lambda': 'lambdap'}, inplace=True)
+    
+    def filter_data(self):
+        if self.filters is None:
+            print('Warning: no filter conditions provided in attribute. Filtered data is identical to original data.')
+            self.filtered_data = self.data
+        else:
+            filter_master = pd.Series(data=[True] * len(self.data.index), index=self.data.index, dtype=bool)
+            print('Total valid start obs: %d' % sum(filter_master))
+            if 'kappa_lb' in list(self.filters.keys()):
+                # filter1 = (self.data.kappa > 1e-8)
+                filter_master = filter_master & (self.data.kappa > self.filters['kappa_lb'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'omega_lb' in list(self.filters.keys()):
+                # filter2 = (self.data.omega > 1e-8)
+                filter_master = filter_master & (self.data.omega > self.filters['omega_lb'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'lambda_lb' in list(self.filters.keys()):
+                # filter3 = (self.data.lambdap > 1e-8)
+                filter_master = filter_master & (self.data.lambdap > self.filters['lambda_lb'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'kappa_ub' in list(self.filters.keys()):
+                # filter4 = (self.data.kappa < 0.4995)
+                filter_master = filter_master & (self.data.kappa < self.filters['kappa_ub'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'omega_at_1' in list(self.filters.keys()):
+                # filter5 = ((self.data.omega < (1 / (1 - eps_prop_bound_f))) & (self.data.omega > (1 * (1 - eps_prop_bound_f))))
+                filter_master = filter_master & ~((self.data.omega < (1 / (1 - self.filters['omega_at_1']))) & (
+                            self.data.omega > (1 * (1 - self.filters['omega_at_1']))))
+                # print('omega at 1 Total valid start obs: %d' % sum(filter_master))
+            if 'kappa_at_initial' in list(self.filters.keys()):
+                # filter6 = ~((self.data.kappa < (self.data.kappa_initial / (1 - eps_prop_bound_f))) & (
+                #                 self.data.kappa > (self.data.kappa_initial * (1 - eps_prop_bound_f))))
+                filter_master = filter_master & ~(
+                            (self.data.kappa < (self.data.kappa_initial / (1 - self.filters['kappa_at_initial']))) & (
+                                self.data.kappa > (self.data.kappa_initial * (1 - self.filters['kappa_at_initial']))))
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'omega_at_initial' in list(self.filters.keys()):
+                # filter7 = ~((self.data.omega < (self.data.omega_initial / (1 - eps_prop_bound_f))) & (
+                #                 self.data.omega > (self.data.omega_initial * (1 - eps_prop_bound_f))))
+                filter_master = filter_master & ~(
+                            (self.data.omega < (self.data.omega_initial / (1 - self.filters['omega_at_initial']))) & (
+                                self.data.omega > (self.data.omega_initial * (1 - self.filters['omega_at_initial']))))
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'lambda_at_initial' in list(self.filters.keys()):
+                # filter8 = ~((self.data.lambdap < (self.data.lambda_initial / (1 - eps_prop_bound_f))) & (
+                #                 self.data.lambdap > (self.data.lambda_initial * (1 - eps_prop_bound_f))))
+                filter_master = filter_master & ~(
+                            (self.data.lambdap < (self.data.lambda_initial / (1 - self.filters['lambda_at_initial']))) & (
+                                self.data.lambdap > (self.data.lambda_initial * (1 - self.filters['lambda_at_initial']))))
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'kappa_stat_sig' in list(self.filters.keys()):
+                #  filter9 = self.data.kappa_tstat > 0
+                filter_master = filter_master & (self.data.kappa_tstat > self.filters['kappa_stat_sig'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'omega_stat_sig' in list(self.filters.keys()):
+                #  filter10 = self.data.omega_tstat > 1.96
+                filter_master = filter_master & (self.data.omega_tstat > self.filters['omega_stat_sig'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+            if 'lambda_stat_sig' in list(self.filters.keys()):
+                #  filter11 = self.data.lambda_tstat > 1.96
+                filter_master = filter_master & (self.data.lambda_tstat > self.filters['lambda_stat_sig'])
+                # print('Total valid start obs: %d' % sum(filter_master))
+    
+            self.filtered_data = self.data[filter_master]
+
+    def calc_data_set_sum_stats(self, data_set='data'):
+        for dset in ['data', 'filtered_data']:
+            for par in ['kappa', 'omega', 'lambdap']:
+                self.mean[dset][par] = self.__getattribute__(dset)[par].mean()
+                self.sample_std[dset][par] = self.__getattribute__(dset)[par].std()
+                self.n_obs[dset][par] = self.__getattribute__(dset)[par].shape[0]
+
+
+def run_test(test_info_f, test_param_name_f, filtered_type_f, scenarios_f):
+    t_scen1_f = scenarios_f[test_info_f['scenario1']['player']][test_info_f['scenario1']['case']]
+    t_scen2_f = scenarios_f[test_info_f['scenario2']['player']][test_info_f['scenario2']['case']]
+
+    t_tstat_f, t_pval_f = two_sample_test_ind_means(mu1=t_scen1_f.mean[filtered_type_f][test_param_name_f],
+                                                    mu2=t_scen2_f.mean[filtered_type_f][test_param_name_f],
+                                                    s1=t_scen1_f.sample_std[filtered_type_f][test_param_name_f],
+                                                    s2=t_scen2_f.sample_std[filtered_type_f][test_param_name_f],
+                                                    n1=t_scen1_f.n_obs[filtered_type_f][test_param_name_f],
+                                                    n2=t_scen2_f.n_obs[filtered_type_f][test_param_name_f],
+                                                    n_sides=2)
+
+    print('\nFor param %s:\n(player %s, case %s, mean = %3.4f, stdev = %3.4f, n_obs=%d) vs\n(player %s, case %s, mean = %3.4f, stdev = %3.4f, n_obs=%d):\ntwo-sided diff of means pval = %3.4f' % (
+        test_param_name_f,
+        test_info_f['scenario1']['player'],
+        test_info_f['scenario1']['case'],
+        t_scen1_f.mean[filtered_type_f][test_param_name_f],
+        t_scen1_f.sample_std[filtered_type_f][test_param_name_f],
+        t_scen1_f.n_obs[filtered_type_f][test_param_name_f],
+        test_info_f['scenario2']['player'],
+        test_info_f['scenario2']['case'],
+        t_scen2_f.mean[filtered_type_f][test_param_name_f],
+        t_scen2_f.sample_std[filtered_type_f][test_param_name_f],
+        t_scen2_f.n_obs[filtered_type_f][test_param_name_f],
+        t_pval_f))
+
+    return t_tstat_f, t_pval_f
+
+
+tests = [{'scenario1': {'player': 'bill', 'case': 'post_neutral_or_blind_only'}, 'scenario2': {'player': 'bill', 'case': 'post_loss_excl_blind_only'}},
+         {'scenario1': {'player': 'pluribus', 'case': 'post_neutral_or_blind_only'}, 'scenario2': {'player': 'pluribus', 'case': 'post_loss_excl_blind_only'}}]
+unique_sets = list()
+for t in tests:
+    for s in t.values():
+        unique_sets.append((s['player'], s['case']))
+
+scenarios = dict()
+for us in set(unique_sets):
+    t_scen = Scenario(us[0], us[1], filters)
+    t_scen.import_data()
+    t_scen.filter_data()
+    t_scen.calc_data_set_sum_stats()
+    try:
+        scenarios[us[0]][us[1]] = t_scen
+    except KeyError:
+        scenarios.update({us[0]: {us[1]: t_scen}})
+    del t_scen
+
+for t in tests:
+    tstat, pval = run_test(t, test_param_name, 'filtered_data', scenarios)
+
+
 
 #################
 

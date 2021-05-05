@@ -477,6 +477,13 @@ for specs in hyp_test_specs.values():
                                               test_case_names_f=specs['test_cases'],
                                               player_names_f=['human', 'ADM'])
 
+# run between hypotehsis tests
+between_test_col_name = 'zero_or_blind_only_outcome_previous_TF'
+print('two_sample_test_prop, human v ADM for case: %s' % between_test_col_name)
+print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc[between_test_col_name, 'human' + '_perc_preflop_fold'],
+                                                             df_data_summary.loc[between_test_col_name, 'ADM' + '_perc_preflop_fold'],
+                                                             df_data_summary.loc[between_test_col_name, 'human' + '_nobs'],
+                                                             df_data_summary.loc[between_test_col_name, 'ADM' + '_nobs'], n_sides_f=2))
 
 # df_data_summary.to_csv(os.path.join(fp_output, 'data_summary.csv'))
 
