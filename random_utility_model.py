@@ -18,15 +18,16 @@ fn_prob_payoff_dict = 'prob_payoff_dicts.json'
 
 # ---- Params -----
 # --- data selection params
-select_player = 'Pluribus'
-select_case = 'post_loss_excl_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
-fraction_of_data_to_use_for_estimation = .8
+select_player = 'Bill'
+select_case = 'post_neutral_or_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
+fraction_of_data_to_use_for_estimation = .3
 save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
 
 # ---- multi start params
-num_multistarts = 100000
-save_TF = False
+num_multistarts = 200000
+save_TF = True
 save_iter = 10000
+t_save_index_start = 0
 
 # ----- Calcs -----
 if not save_TF:
@@ -412,7 +413,7 @@ def print_auditing_calcs(t_choice_param_dictionary, t_kappa, t_lambda, t_omega):
             print('\n')
 
 
-def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, save_path=os.getcwd()):
+def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, save_path=os.getcwd(), save_index_start=0):
     initial_points = {'kappa': np.random.uniform(low=t_lb['kappa'], high=t_ub['kappa'], size=nstart_points),
                       'lambda': np.random.uniform(low=t_lb['lambda'], high=t_ub['lambda'], size=nstart_points),
                       'omega': np.random.uniform(low=t_lb['omega'], high=t_ub['omega'], size=nstart_points)}
@@ -438,7 +439,7 @@ def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, sav
         if save_iter is not False:
             if (((i + 1) % save_iter) == 0) and (i > 0):
                 with open(os.path.join(save_path,
-                                       'multistart_results_iter' + str(i +200000 + 1 - save_iter) + 't' + str(200000 + i)), 'wb') as ff:
+                                       'multistart_results_iter' + str(i + save_index_start + 1 - save_iter) + 't' + str(save_index_start + i)), 'wb') as ff:
                     pickle.dump(results_list, ff)  # pickle.dump(results_list[(i + 1 - save_iter):(i + 1)], ff)
                     results_list = list()
 
@@ -477,8 +478,8 @@ def parse_multistart(multistart_results, kappa_index, lambda_index, omega_index)
             t_tstat = None
 
         t_param_list_dicts.append({'est_run_id': est_run_id,
-                                       'kappa': r['results'].x[kappa_index],
-                                       'lambda': r['results'].x[lambda_index],
+                                   'kappa': r['results'].x[kappa_index],
+                                   'lambda': r['results'].x[lambda_index],
                                    'omega': r['results'].x[omega_index],
                                    'message': r['results'].message,
                                    'pos_def_hess': t_second_order_cond,
@@ -607,12 +608,13 @@ model.print()
 
 # --- run multistart
 # run and save
-select_results = run_multistart(nstart_points=num_multistarts, t_lb=lb, t_ub=ub, model_object=model, save_iter=save_iter, save_path=save_path)
+select_results = run_multistart(nstart_points=num_multistarts, t_lb=lb, t_ub=ub, model_object=model, save_iter=save_iter, save_path=save_path, save_index_start=t_save_index_start)
 
 # load from saved
 select_results = list()
 for fn in [f for f in os.listdir(save_path) if os.path.isfile(os.path.join(save_path, f)) if f[0] != '.']:  #os.listdir(save_path):
     with open(os.path.join(save_path, fn), 'rb') as f:
+        # if fn[len('multistart_results_iter'):][0]=='3': ##########
         select_results = select_results + pickle.load(f)
 
 ##########
@@ -627,11 +629,12 @@ for fn in [f for f in os.listdir(save_path) if os.path.isfile(os.path.join(save_
 #             # (r['results'].message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'):
 #         print('%d %s' % (i, r['results'].x))
 #     i += 1
-###########
-
+##########
 list_dict_params, list_dict_obs = parse_multistart(select_results, kappa_index=model.param_names_f.index('kappa'), lambda_index=model.param_names_f.index('lambda'), omega_index=model.param_names_f.index('omega'))
 
 # ====== SAVE TO CSV FOR TABLEAU EXAMINATION =======
+# select_case_hold = select_case  #####
+# select_case = select_case_hold + '_30perc_draw_test'    ######
 if save_TF:
     pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player.lower() + '_multistart_params_' + select_case + '.csv'))
     pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
