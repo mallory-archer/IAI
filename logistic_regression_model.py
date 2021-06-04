@@ -282,7 +282,7 @@ def create_master_data_frame(games_f):
                 t_dict = {'game': g_num, 'hand': h_num, 'player': p_name,
                           'slansky': h.odds[p_name]['slansky'], 'seat': int(h.players.index(p_name)) + 1,
                           'stack_rank': h.start_stack_rank[p_name], 'start_stack': h.start_stack[p_name],
-                          'preflop_action': h.actions['preflop'][p_name], 'outcome': h.outcomes[p_name]}
+                          'preflop_action': h.actions['preflop']['final'][p_name], 'outcome': h.outcomes[p_name]}
                 try:
                     t_prev_outcome = g.hands[str(int(h_num) - 1)].outcomes[p_name]
                     t_relative_start_stack = h.relative_start_stack[p_name]
@@ -303,7 +303,7 @@ def create_master_data_frame(games_f):
     return df_f
 
 
-def engineer_features(df_f, external_model_f=None):
+def engineer_features(df_f, big_blind_f=100, small_blind_f=50):
     # add additional features
     df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
     df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
@@ -316,10 +316,25 @@ def engineer_features(df_f, external_model_f=None):
     df_f['win_outcome_previous_TF'] = (df_f['outcome_previous_cat'] == 'win')
 
     df_f['zero_outcome_previous_TF'] = (df_f.outcome_previous == 0)  # fold, no blind ("zero" outcome_previous)
-    df_f['blind_only_outcome_previous_TF'] = (abs(df_f.outcome_previous) == 50) | (abs(df_f.outcome_previous) == 100) | (abs(df_f.outcome_previous) == 150)
+    df_f['blind_only_outcome_previous_TF'] = (abs(df_f.outcome_previous) == small_blind_f) | (abs(df_f.outcome_previous) == big_blind_f) | (abs(df_f.outcome_previous) == (big_blind_f + small_blind_f))
     df_f['zero_or_blind_only_outcome_previous_TF'] = df_f['zero_outcome_previous_TF'] | df_f['blind_only_outcome_previous_TF']
-    df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -50) & (df_f.outcome_previous != -100)
-    df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != 150)
+    df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -small_blind_f) & (df_f.outcome_previous != -big_blind_f)
+    df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != (big_blind_f + small_blind_f))
+
+    ##########
+    # in progress
+    # create previous player action variables
+    # def calc_number_still_in(df_f_f):
+    #     t_group['t_seat'] = t_group['seat'].map({'1': 7, '2': 8, '3': 3, '4': 4, '5': 5, '6': 6})
+    #     t_group.sort_values('t_seat', ascending=True, inplace=True)
+    #     for s in t_group['t_seat']:
+    #         print(s)
+    #         print(t_group.loc[t_group['t_seat'] < s])
+    #     return None
+    #
+    # t_group = df_f.groupby(['game', 'hand']).get_group(('100', '0'))
+    # [print(x['seat']) for x in df_f.groupby(['game', 'hand']).get_group(('100', '0'))]
+    ###############
 
     # grouping players (somewhat arbitrary...)
     df_f['sneaky_robot_player_TF'] = df_f['player'].apply(lambda x: x in ['Bill', 'MrBrown', 'MrPink', 'MrWhite'])
@@ -478,7 +493,7 @@ for specs in hyp_test_specs.values():
                                               player_names_f=['human', 'ADM'])
 
 # run between hypotehsis tests
-between_test_col_name = 'zero_or_blind_only_outcome_previous_TF'
+between_test_col_name = 'win_outcome_xonlyblind_previous_TF'   #'zero_or_blind_only_outcome_previous_TF'
 print('two_sample_test_prop, human v ADM for case: %s' % between_test_col_name)
 print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc[between_test_col_name, 'human' + '_perc_preflop_fold'],
                                                              df_data_summary.loc[between_test_col_name, 'ADM' + '_perc_preflop_fold'],

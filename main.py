@@ -93,6 +93,17 @@ del t_fn, t_game
 
 _, _, _, _ = meta_game_stats(games)
 
+# ---- Check action parsing by inspection ----
+import random
+import json
+# t_game = random.choice(list(games.keys()))
+# t_hand = random.choice(list(games[t_game].hands.keys()))
+# t_game = '94'
+# t_hand = '45'
+# print(games[t_game].hands[t_hand].hand_data)
+# print(json.dumps(games[t_game].hands[t_hand].actions, indent=4))
+# print(json.dumps(games[t_game].hands[t_hand].outcomes, indent=4))
+
 # ----- combine files with 'b' appended to file name -----
 print("\nCombining games with 'b' appended to filename\n")
 games_b = [x for x in games.keys() if x.find('b') > -1]
