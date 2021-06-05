@@ -18,14 +18,14 @@ fn_prob_payoff_dict = 'prob_payoff_dicts.json'
 
 # ---- Params -----
 # --- data selection params
-select_player = 'Bill'
+select_player = 'Pluribus'
 select_case = 'post_neutral_or_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
 fraction_of_data_to_use_for_estimation = .3
 save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
 
 # ---- multi start params
-num_multistarts = 200000
-save_TF = True
+num_multistarts = 10
+save_TF = False
 save_iter = 10000
 t_save_index_start = 0
 
@@ -241,7 +241,7 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
                 # Class ChoiceSituaiton accepts additional specification of "ordered" or "dominant" gamble type,
                 # currently do not have ordered vs. dominant type working
                 t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:],
-                                                     sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop'] == 'f' else "play",
+                                                     sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop']['final'] == 'f' else "play",
                                                      slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
                                                      stack_rank=player_f.stack_ranks[game_num][hand_num],
                                                      seat=player_f.seat_numbers[game_num][hand_num],

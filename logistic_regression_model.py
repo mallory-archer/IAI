@@ -398,7 +398,7 @@ def run_within_hypothesis_tests(df_f, n_sides_f, baseline_name_f, test_case_name
                     df_f.loc[baseline_name_f, p + '_perc_preflop_fold'],
                     df_f.loc[test_case, p + '_perc_preflop_fold'],
                     df_f.loc[baseline_name_f, p + '_nobs'],
-                    df_f.loc[baseline_name_f, p + '_nobs'], n_sides_f)
+                    df_f.loc[test_case, p + '_nobs'], n_sides_f)
     return df_f
 
 
@@ -487,13 +487,13 @@ hyp_test_specs = {'test_1': {'baseline': 'zero_outcome_previous_TF',
                   'test_2': {'baseline': 'zero_or_blind_only_outcome_previous_TF',
                              'test_cases': ['loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF']}}
 for specs in hyp_test_specs.values():
-    df_data_summary = run_within_hypothesis_tests(df_data_summary, n_sides_f=2,
+    df_data_summary = run_within_hypothesis_tests(df_f=df_data_summary, n_sides_f=2,
                                               baseline_name_f=specs['baseline'],
                                               test_case_names_f=specs['test_cases'],
                                               player_names_f=['human', 'ADM'])
 
 # run between hypotehsis tests
-between_test_col_name = 'win_outcome_xonlyblind_previous_TF'   #'zero_or_blind_only_outcome_previous_TF'
+between_test_col_name = 'loss_outcome_xonlyblind_previous_TF'   #'zero_or_blind_only_outcome_previous_TF'
 print('two_sample_test_prop, human v ADM for case: %s' % between_test_col_name)
 print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc[between_test_col_name, 'human' + '_perc_preflop_fold'],
                                                              df_data_summary.loc[between_test_col_name, 'ADM' + '_perc_preflop_fold'],

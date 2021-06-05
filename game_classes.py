@@ -198,11 +198,14 @@ class Hand:
             self.odds = dict(zip([new if x == old else x for x in list(self.odds.keys())], list(self.odds.values())))
             for a in self.actions.keys():
                 for tseq in self.actions[a]['sequence'].keys():
-                    if list(self.actions[a]['sequence'][tseq].keys())[0] == old:
-                        self.actions[a]['sequence'][tseq].update({new: list(self.actions[a]['sequence'][tseq].values())[0]})
-                self.actions[a]['final'].update(dict(zip([new if x == old else x for x in list(self.actions[a]['final'].keys())],
-                                                                     list(self.actions[a]['final'].values()))))
-                # self.actions[a] = dict(zip([new if x == old else x for x in list(self.actions[a].keys())], list(self.actions[a].values())))
+                    try:
+                        self.actions[a]['sequence'][tseq].update({new: self.actions[a]['sequence'][tseq].pop(old)})
+                    except KeyError:
+                        pass
+                try:
+                    self.actions[a]['final'].update({new: self.actions[a]['final'].pop(old)})
+                except KeyError:
+                    pass
             self.outcomes = dict(zip([new if x == old else x for x in list(self.outcomes.keys())], list(self.outcomes.values())))
 
     def check_player_completeness(self, check_atts_ff=None):
@@ -471,11 +474,27 @@ class Player:
             t_hand_dict = dict()
             for t_h_num in range(t_g.start_hand, t_g.end_hand):
                 t_round_dict = dict()
+                no_fold = True
                 for t_r, t_a in t_g.hands[str(t_h_num)].actions.items():
-                    try:
-                        t_round_dict.update({t_r: t_a[self.name]})
-                    except KeyError:
-                        pass
+                    t_act_vec = []
+                    t_final = None
+                    if no_fold:
+                        try:
+                            t_final = t_a['final'][self.name]
+                            if t_a['final'][self.name] == 'f':
+                                no_fold = False
+                        except KeyError:
+                            pass
+
+                        try:
+                            for t_seq in range(max(t_a['sequence'].keys())+1):
+                                try:
+                                    t_act_vec.append(t_a['sequence'][t_seq][self.name])
+                                except KeyError:
+                                    pass
+                        except ValueError:
+                            print('Possible all in on game %s hand %s' % (t_g_num, t_h_num))
+                        t_round_dict.update({t_r: {'sequence': t_act_vec, 'final': t_final}})
                 t_hand_dict.update({str(t_h_num): t_round_dict})
             t_action_dict.update({t_g_num: t_hand_dict})
         return t_action_dict
@@ -539,7 +558,7 @@ class Player:
                 t_hand_count += int((not any(self.blinds[t_g_num][t_h_num].values())))
                 try:    # if player is eliminated actions dictionary is empty
                     t_voluntary_play_count += int((not any(self.blinds[t_g_num][t_h_num].values())) and
-                                                  (self.actions[t_g_num][t_h_num]['preflop'] == 'r' or self.actions[t_g_num][t_h_num]['preflop'] == 'c'))   # count hand if not blind and raised or called, #### pre-flop only configured
+                                                  (self.actions[t_g_num][t_h_num]['preflop']['final'] != 'f'))   # count hand if not blind and raised or called, #### pre-flop only configured
                 except KeyError:
                     pass
         return t_voluntary_play_count / t_hand_count, t_voluntary_play_count, t_hand_count
