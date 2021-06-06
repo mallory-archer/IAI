@@ -100,15 +100,15 @@ for _, g in games.items():
 _, _, _, _ = meta_game_stats(games)
 
 # ---- Check action parsing by inspection ----
-# import random
-# import json
+import random
+import json
 # t_game = random.choice(list(games.keys()))
 # t_hand = random.choice(list(games[t_game].hands.keys()))
-# t_game = '106'
-# t_hand = '216'
-# print(games[t_game].hands[t_hand].hand_data)
-# print(json.dumps(games[t_game].hands[t_hand].actions, indent=4))
-# print(json.dumps(games[t_game].hands[t_hand].outcomes, indent=4))
+t_game = '100'
+t_hand = '75'
+print(games[t_game].hands[t_hand].hand_data)
+print(json.dumps(games[t_game].hands[t_hand].actions, indent=4))
+print(json.dumps(games[t_game].hands[t_hand].outcomes, indent=4))
 
 # ----- parse by player -----
 all_players = set()
