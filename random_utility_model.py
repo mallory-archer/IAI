@@ -27,7 +27,7 @@ save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(
 num_multistarts = 50000
 save_TF = True
 save_iter = 10000
-t_save_index_start = 100000
+t_save_index_start = 150000
 
 # ----- Calcs -----
 if not save_TF:
@@ -641,7 +641,12 @@ if save_TF:
     pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
 
 
-
+# two_sample_test_ind_means(mu1, mu2, s1, s2, n1, n2, n_sides)
+from assumption_calc_functions import two_sample_test_ind_means
+two_sample_test_ind_means(-2.285, -2.869, 0.3857, 0.4956, 257, 108, n_sides=2)    # pluribus neutral vs lost ln(omega) diff
+two_sample_test_ind_means(-2.626, -3.084, 0.8418, 1.048, 108, 257, n_sides=2)    # pluribus neutral vs lost ln(kappa) diff
+two_sample_test_ind_means(-2.573, -2.583, 0.2741, 0.7603, 340, 250, n_sides=2)    # bill neutral vs lost ln(omega) diff
+two_sample_test_ind_means(-3.022, -2.751, 0.8563, 1.058, 340, 250, n_sides=2)    # bill neutral vs lost ln(kappa) diff
 
 
 
