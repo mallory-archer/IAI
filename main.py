@@ -1,30 +1,14 @@
 import os
-import numpy as np
 import pandas as pd
-from scipy.stats import norm
-import statsmodels.api as sm
 from game_classes import *
 
 pd.options.display.max_columns = 25
 
 # ---- Set parameters ----
-# fd_data = os.path.join("..", "self", "5H1AI_logs")  # location of data relative to code base path
 fd_data = os.path.join("..", "Data", "5H1AI_logs")  # location of data relative to code base path
 fn_data = [x for x in os.listdir(fd_data) if x.find('sample_game') > -1]  # list of data file names (log files)
 
-
 # ---- Define functions -----
-def prop_2samp_ind_large(n1_success, n2_success, n1, n2):
-    p1 = n1_success / n1
-    p2 = n2_success / n2
-    phat = (n1_success + n2_success) / (n1 + n2)
-    qhat = 1 - phat
-    stdev_p1p2_diff = np.sqrt(phat * qhat * ((1 / n1) + (1 / n2)))
-    z_f = (p1 - p2) / stdev_p1p2_diff
-    p_f = round((1 - norm.cdf(abs(z_f))) * 2, 4)
-    return p1, p2, z_f, p_f
-
-
 def extract_game_number(fn_f):
     return str(fn_f.split('sample_game_')[1].split('.log')[0])
 
@@ -114,6 +98,17 @@ _, _, _, _ = meta_game_stats(games)
 for _, g in games.items():
     g.map_players()
 _, _, _, _ = meta_game_stats(games)
+
+# ---- Check action parsing by inspection ----
+import random
+import json
+# t_game = random.choice(list(games.keys()))
+# t_hand = random.choice(list(games[t_game].hands.keys()))
+t_game = '100'
+t_hand = '75'
+print(games[t_game].hands[t_hand].hand_data)
+print(json.dumps(games[t_game].hands[t_hand].actions, indent=4))
+print(json.dumps(games[t_game].hands[t_hand].outcomes, indent=4))
 
 # ----- parse by player -----
 all_players = set()

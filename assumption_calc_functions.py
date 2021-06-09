@@ -63,10 +63,10 @@ def guess_blind_amount(player_f, game_hand_index_f):
         for hand_num in hands:
             try:
                 if (player_f.outcomes[game_num][hand_num] > 0) and (
-                        player_f.actions[game_num][hand_num]['preflop'] != 'f'):
+                        player_f.actions[game_num][hand_num]['preflop']['final'] != 'f'):
                     win_play_amount.append(player_f.outcomes[game_num][hand_num])
                 if (player_f.outcomes[game_num][hand_num] < 0) and (
-                        player_f.actions[game_num][hand_num]['preflop'] != 'f'):
+                        player_f.actions[game_num][hand_num]['preflop']['final'] != 'f'):
                     loss_play_amount.append(player_f.outcomes[game_num][hand_num])
             except KeyError:
                 pass

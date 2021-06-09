@@ -275,14 +275,43 @@ class LogisticRegression:
 
 def create_master_data_frame(games_f):
     # configure data frame
+    # def create_raise_action_df(t_dict_ff):
+    #     t_df_ff = pd.DataFrame([(list(v.keys())[0], list(v.values())[0][1:]) for _, v in sorted(t_dict_ff.items()) if
+    #                             list(v.values())[0][0] == 'r'], columns=['player', 'action'])
+    #     if t_df_ff.shape[0] > 0:
+    #         t_df_ff['inc_action'] = pd.to_numeric(t_df_ff['action']).diff().fillna(t_df_ff.iloc[0]['action']).astype(float)
+    #     return t_df_ff
+
+    def create_raise_action_dict(t_dict_ff):
+        t_list1 = [(list(v.keys())[0], list(v.values())[0][1:]) for _, v in sorted(t_dict_ff.items()) if list(v.values())[0][0] == 'r']
+        t_list_names = [x[0] for x in t_list1]
+        t_list_raise = [int(x[1]) for x in t_list1]
+        t_list_raise_shift = [0]+ t_list_raise[:-1]
+        t_list_inc_raise = [t_list_raise[i] - t_list_raise_shift[i] for i in range(len(t_list_raise))]
+        t_raise_dict = dict()
+        for t_name in set(t_list_names):
+            t_raise_dict.update({t_name: list()})
+        for i in range(len(t_list_names)):
+            t_raise_dict[t_list_names[i]].append(t_list_inc_raise[i])
+        return t_raise_dict
+
+    def extract_raises_from_actions(t_dict_ff, p_name_ff):
+        try:
+            # t_dict_ff['inc_action'] = pd.to_numeric(t_dict_ff['action']).diff().fillna(t_dict_ff.iloc[0]['action']).astype(float)
+            return {'preflop_num_raises': len(t_dict_ff[p_name_ff]), 'preflop_tot_amt_raise': sum(t_dict_ff[p_name_ff])}
+        except KeyError:
+            return {'preflop_num_raises': 0, 'preflop_tot_amt_raise': 0}
+
     obs_list_f = list()
     for g_num, g in games_f.items():
         for h_num, h in g.hands.items():
+            t_raise_dict = create_raise_action_dict(h.actions['preflop']['sequence'])
             for p_name in h.players:
                 t_dict = {'game': g_num, 'hand': h_num, 'player': p_name,
                           'slansky': h.odds[p_name]['slansky'], 'seat': int(h.players.index(p_name)) + 1,
                           'stack_rank': h.start_stack_rank[p_name], 'start_stack': h.start_stack[p_name],
-                          'preflop_action': h.actions['preflop'][p_name], 'outcome': h.outcomes[p_name]}
+                          'preflop_action': h.actions['preflop']['final'][p_name], 'outcome': h.outcomes[p_name]}
+                t_dict.update(extract_raises_from_actions(t_raise_dict, p_name))
                 try:
                     t_prev_outcome = g.hands[str(int(h_num) - 1)].outcomes[p_name]
                     t_relative_start_stack = h.relative_start_stack[p_name]
@@ -303,7 +332,7 @@ def create_master_data_frame(games_f):
     return df_f
 
 
-def engineer_features(df_f, external_model_f=None):
+def engineer_features(df_f, big_blind_f=100, small_blind_f=50):
     # add additional features
     df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
     df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
@@ -316,10 +345,15 @@ def engineer_features(df_f, external_model_f=None):
     df_f['win_outcome_previous_TF'] = (df_f['outcome_previous_cat'] == 'win')
 
     df_f['zero_outcome_previous_TF'] = (df_f.outcome_previous == 0)  # fold, no blind ("zero" outcome_previous)
-    df_f['blind_only_outcome_previous_TF'] = (abs(df_f.outcome_previous) == 50) | (abs(df_f.outcome_previous) == 100) | (abs(df_f.outcome_previous) == 150)
+    df_f['blind_only_outcome_previous_TF'] = (abs(df_f.outcome_previous) == small_blind_f) | (abs(df_f.outcome_previous) == big_blind_f) | (abs(df_f.outcome_previous) == (big_blind_f + small_blind_f))
     df_f['zero_or_blind_only_outcome_previous_TF'] = df_f['zero_outcome_previous_TF'] | df_f['blind_only_outcome_previous_TF']
-    df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -50) & (df_f.outcome_previous != -100)
-    df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != 150)
+    df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -small_blind_f) & (df_f.outcome_previous != -big_blind_f)
+    df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != (big_blind_f + small_blind_f))
+
+    df_f['preflop_hand_tot_amount_raise'] = df_f.groupby(['game', 'hand'])['preflop_tot_amt_raise'].transform('sum')
+    df_f['preflop_hand_num_raise'] = df_f.groupby(['game', 'hand'])['preflop_num_raises'].transform('sum')
+    df_f['preflop_play_TF'] = ~df_f.preflop_fold_TF
+    df_f['preflop_num_final_participants'] = df_f.groupby(['game', 'hand'])['preflop_play_TF'].transform('sum')
 
     # grouping players (somewhat arbitrary...)
     df_f['sneaky_robot_player_TF'] = df_f['player'].apply(lambda x: x in ['Bill', 'MrBrown', 'MrPink', 'MrWhite'])
@@ -383,7 +417,7 @@ def run_within_hypothesis_tests(df_f, n_sides_f, baseline_name_f, test_case_name
                     df_f.loc[baseline_name_f, p + '_perc_preflop_fold'],
                     df_f.loc[test_case, p + '_perc_preflop_fold'],
                     df_f.loc[baseline_name_f, p + '_nobs'],
-                    df_f.loc[baseline_name_f, p + '_nobs'], n_sides_f)
+                    df_f.loc[test_case, p + '_nobs'], n_sides_f)
     return df_f
 
 
@@ -472,13 +506,13 @@ hyp_test_specs = {'test_1': {'baseline': 'zero_outcome_previous_TF',
                   'test_2': {'baseline': 'zero_or_blind_only_outcome_previous_TF',
                              'test_cases': ['loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF']}}
 for specs in hyp_test_specs.values():
-    df_data_summary = run_within_hypothesis_tests(df_data_summary, n_sides_f=2,
+    df_data_summary = run_within_hypothesis_tests(df_f=df_data_summary, n_sides_f=2,
                                               baseline_name_f=specs['baseline'],
                                               test_case_names_f=specs['test_cases'],
                                               player_names_f=['human', 'ADM'])
 
 # run between hypotehsis tests
-between_test_col_name = 'zero_or_blind_only_outcome_previous_TF'
+between_test_col_name = 'win_outcome_xonlyblind_previous_TF' #'loss_outcome_xonlyblind_previous_TF'   #'zero_or_blind_only_outcome_previous_TF'
 print('two_sample_test_prop, human v ADM for case: %s' % between_test_col_name)
 print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc[between_test_col_name, 'human' + '_perc_preflop_fold'],
                                                              df_data_summary.loc[between_test_col_name, 'ADM' + '_perc_preflop_fold'],
@@ -490,12 +524,12 @@ print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc
 # ----- SPECIFY MODEL PARAMS ----
 endog_var_name = 'preflop_fold_TF'
 add_constant = True
-exog_var_name = ['human_player_TF']
+exog_var_name = ['human_player_TF', 'preflop_hand_num_raise'] # , 'preflop_hand_tot_amount_raise', 'human_player_TF',
 ordinal_vars = ['slansky', 'seat_map']    # 'seat_map': seat_map reassigns the first seat to the player sitting in seat 3; this is to allow for ordinal varaibles to account for nonlinearity in seats 1 and 2 as a result of blinds
 bool_vars = {}
 categorical_drop_vals = {'seat': '3', 'stack_rank': '1', 'player': 'Pluribus'}    # 'player': 'Pluribus',
 interaction_vars = [('loss_outcome_xonlyblind_previous_TF', 'human_player_TF'), ('win_outcome_xonlyblind_previous_TF', 'human_player_TF')]
-scale_vars_list = ['start_stack']
+scale_vars_list = ['start_stack', 'preflop_hand_tot_amount_raise']
 
 # filter and map
 df_data = df_master.reindex()
