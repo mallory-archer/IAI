@@ -149,17 +149,12 @@ class Hand:
                 if tp not in t_ultimate.keys():
                     t_ultimate.update({tp: t_sequence[i][tp]})
 
-            # round_dict_f = dict(zip(round_actors_f, [x for x in round_actions_f if x in {'f', 'r', 'c'}]))
-            # [t_actors.remove(a) for a in [k for k, v in round_dict_f.items() if v == 'f']]
             return {'sequence': t_sequence, 'final': t_ultimate}
 
         try:
             t_order_of_actions = ['preflop', 'flop', 'river', 'turn']
             t_actions = dict(zip(t_order_of_actions, self.hand_data.split(':')[2].split('/')))
             t_actors = self.players[:]
-
-            # t_actions = dict(zip(t_order_of_actions, temp.split(':')[2].split('/')))    #####
-            # t_actors = [x.rstrip() for x in temp.split(':')[-1].split('|')]     #####
 
             # adjust preflop actions to account for all folds defaulting to big blind gets pot; label as "call" for big blind
             if (len(t_actions['preflop']) < len(t_actors)) and (all([x == 'f' for x in t_actions['preflop']])):
@@ -432,7 +427,7 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 try:
                     t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].players.index(self.name) + 1})
                 except:
@@ -445,7 +440,7 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 try:
                     t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].cards['hole_cards'][self.name]})
                 except KeyError:
@@ -458,7 +453,7 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 try:
                     t_hand_dict.update(
                         {str(t_h_num): t_g.hands[str(t_h_num)].odds[self.name]})
@@ -472,12 +467,14 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 t_round_dict = dict()
                 no_fold = True
+                no_all_in = True
                 for t_r, t_a in t_g.hands[str(t_h_num)].actions.items():
                     t_act_vec = []
                     t_final = None
+                    t_counts = {'r': 0, 'c': 0, 'f': 0, 'check': 0, 'call': 0}
                     if no_fold:
                         try:
                             t_final = t_a['final'][self.name]
@@ -487,14 +484,33 @@ class Player:
                             pass
 
                         try:
+                            raise_occurred_TF = False
                             for t_seq in range(max(t_a['sequence'].keys())+1):
+                                if list(t_a['sequence'][t_seq].values())[0] == 'r':
+                                    raise_occurred_TF = True
                                 try:
                                     t_act_vec.append(t_a['sequence'][t_seq][self.name])
+                                    t_counts[t_a['sequence'][t_seq][self.name][0]] += 1    # log the action code r, c, f
+                                    if t_a['sequence'][t_seq][self.name][0] == 'c':
+                                        if raise_occurred_TF or ((t_r == 'preflop') and (t_seq == max(t_a['sequence'].keys()))):
+                                            # if no raise has occurred in the round OR it's preflop and it's all folds
+                                            # with the big blind winning by default, then a 'c' is a check
+                                            # if a raise has occurred, then 'c' is a cal:
+                                            t_counts['call'] += 1
+                                        else:
+                                            t_counts['check'] += 1
                                 except KeyError:
                                     pass
                         except ValueError:
-                            print('Possible all in on game %s hand %s' % (t_g_num, t_h_num))
-                        t_round_dict.update({t_r: {'sequence': t_act_vec, 'final': t_final}})
+                            if no_all_in:
+                                print('Possible all in on game %s hand %s round %s' % (t_g_num, t_h_num, t_r))
+                                no_all_in = False
+
+                        # check to make sure checks / calls counted correctly
+                        if (t_counts['check'] + t_counts['call'] - t_counts['c']) != 0:
+                            print('Warning checks and calls unaccounted for in game %s hand %s for player %s' % (t_g_num, t_h_num, self.name))
+
+                        t_round_dict.update({t_r: {'sequence': t_act_vec, 'final': t_final, 'counts': t_counts}})
                 t_hand_dict.update({str(t_h_num): t_round_dict})
             t_action_dict.update({t_g_num: t_hand_dict})
         return t_action_dict
@@ -504,7 +520,7 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 try:
                     t_hand_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].outcomes[self.name]})
                 except KeyError:
@@ -517,7 +533,7 @@ class Player:
         for t_g_num in self.game_numbers:  # self=p
             t_g = games_ff[t_g_num]
             t_hand_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 t_hand_dict.update({str(t_h_num): {'big': t_g.hands[str(t_h_num)].big_blind == self.name,
                                                    'small': t_g.hands[
                                                                 str(t_h_num)].small_blind == self.name}})  # self = p
@@ -529,7 +545,7 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_stack_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 t_hand_stack_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack[self.name]})
             t_stack_dict.update({t_g_num: t_hand_stack_dict})
         return t_stack_dict
@@ -539,7 +555,7 @@ class Player:
         for t_g_num in self.game_numbers:
             t_g = games_ff[t_g_num]
             t_hand_stack_rank_dict = dict()
-            for t_h_num in range(t_g.start_hand, t_g.end_hand):
+            for t_h_num in range(t_g.start_hand, t_g.end_hand + 1):
                 t_hand_stack_rank_dict.update({str(t_h_num): t_g.hands[str(t_h_num)].start_stack_rank[self.name]})
             t_stack_rank_dict.update({t_g_num: t_hand_stack_rank_dict})
         return t_stack_rank_dict

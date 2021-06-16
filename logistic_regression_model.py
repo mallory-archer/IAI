@@ -273,7 +273,8 @@ class LogisticRegression:
                 return t_pred, classify_pred(t_pred, self.classification_threshold)
 
 
-def create_master_data_frame(games_f):
+def create_master_data_frame(games_f, players_f):
+    # using players structure because raise/fold/check/call parsed by player in game_classes
     # configure data frame
     # def create_raise_action_df(t_dict_ff):
     #     t_df_ff = pd.DataFrame([(list(v.keys())[0], list(v.values())[0][1:]) for _, v in sorted(t_dict_ff.items()) if
@@ -297,7 +298,6 @@ def create_master_data_frame(games_f):
 
     def extract_raises_from_actions(t_dict_ff, p_name_ff):
         try:
-            # t_dict_ff['inc_action'] = pd.to_numeric(t_dict_ff['action']).diff().fillna(t_dict_ff.iloc[0]['action']).astype(float)
             return {'preflop_num_raises': len(t_dict_ff[p_name_ff]), 'preflop_tot_amt_raise': sum(t_dict_ff[p_name_ff])}
         except KeyError:
             return {'preflop_num_raises': 0, 'preflop_tot_amt_raise': 0}
@@ -307,10 +307,16 @@ def create_master_data_frame(games_f):
         for h_num, h in g.hands.items():
             t_raise_dict = create_raise_action_dict(h.actions['preflop']['sequence'])
             for p_name in h.players:
+                t_player = [p for p in players_f if p.name == p_name][0]
                 t_dict = {'game': g_num, 'hand': h_num, 'player': p_name,
                           'slansky': h.odds[p_name]['slansky'], 'seat': int(h.players.index(p_name)) + 1,
                           'stack_rank': h.start_stack_rank[p_name], 'start_stack': h.start_stack[p_name],
-                          'preflop_action': h.actions['preflop']['final'][p_name], 'outcome': h.outcomes[p_name]}
+                          'preflop_action': h.actions['preflop']['final'][p_name],
+                          'num_preflop_raise': t_player.actions[g_num][h_num]['preflop']['counts']['r'],
+                          'num_preflop_fold': t_player.actions[g_num][h_num]['preflop']['counts']['f'],
+                          'num_preflop_check': t_player.actions[g_num][h_num]['preflop']['counts']['check'],
+                          'num_preflop_call': t_player.actions[g_num][h_num]['preflop']['counts']['call'],
+                          'outcome': h.outcomes[p_name]}
                 t_dict.update(extract_raises_from_actions(t_raise_dict, p_name))
                 try:
                     t_prev_outcome = g.hands[str(int(h_num) - 1)].outcomes[p_name]
@@ -327,12 +333,16 @@ def create_master_data_frame(games_f):
     df_f = df_f.astype({'game': str, 'hand': str, 'player': str,
                         'slansky': str, 'seat': str, 'stack_rank': str, 'start_stack': float,
                         'relative_start_stack': float,
-                        'preflop_action': str, 'outcome': float, 'outcome_previous': float,
+                        'preflop_action': str,
+                        'num_preflop_raise': int, 'num_preflop_fold': int,
+                        'num_preflop_check': int, 'num_preflop_call': int,
+                        'outcome': float, 'outcome_previous': float,
                         })
     return df_f
 
 
-def engineer_features(df_f, big_blind_f=100, small_blind_f=50):
+def engineer_features(df_f, big_blind_f=100, small_blind_f=50, large_mult_qual=20):
+    # the large_mult_qual is the multiple of big blinds that qualifies as a "large" loss or win, based on Smith 2009's qualification threshold
     # add additional features
     df_f['preflop_fold_TF'] = (df_f['preflop_action'] == 'f')
     df_f['human_player_TF'] = (df_f['player'] != 'Pluribus')
@@ -349,6 +359,9 @@ def engineer_features(df_f, big_blind_f=100, small_blind_f=50):
     df_f['zero_or_blind_only_outcome_previous_TF'] = df_f['zero_outcome_previous_TF'] | df_f['blind_only_outcome_previous_TF']
     df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -small_blind_f) & (df_f.outcome_previous != -big_blind_f)
     df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != (big_blind_f + small_blind_f))
+
+    df_f['loss_outcome_large_previous_TF'] = df_f['loss_outcome_previous_TF'] & (abs(df_f.outcome_previous / big_blind_f) >= large_mult_qual)
+    df_f['win_outcome_large_previous_TF'] = df_f['win_outcome_previous_TF'] & (abs(df_f.outcome_previous / big_blind_f) >= large_mult_qual)
 
     df_f['preflop_hand_tot_amount_raise'] = df_f.groupby(['game', 'hand'])['preflop_tot_amt_raise'].transform('sum')
     df_f['preflop_hand_num_raise'] = df_f.groupby(['game', 'hand'])['preflop_num_raises'].transform('sum')
@@ -489,9 +502,38 @@ players = data['players']
 games = data['games']
 
 # ----- CREATE DATAFRAME -----
-df_master = create_master_data_frame(games)
+df_master = create_master_data_frame(games, players)
 df_master = engineer_features(df_master)
 print_df_summary(df_master, return_player_summary_f=False)
+
+###### PRELIM EXAM CAN DELETE / FORMALIZE ################
+from poker_funcs import calc_aggressiveness, calc_looseness
+
+
+def get_stats(cases_f):
+    for tn, t_df in cases_f.items():
+        print('Case: %s, looseness = %3.2f, aggressiveness = % 3.2f, num obs = %d' %
+              (tn,
+               calc_looseness(num_calls_f=t_df['num_preflop_call'].sum(),
+                              num_raises_f=t_df['num_preflop_raise'].sum(),
+                              num_tot_obs_f=t_df.shape[0]),
+               calc_aggressiveness(num_raises_f=t_df['num_preflop_raise'].sum(),
+                                   num_checks_f=t_df['num_preflop_check'].sum(),
+                                   num_calls_f=t_df['num_preflop_call'].sum()),
+               t_df.shape[0]
+               )
+              )
+
+
+for t_player in df_master.player.unique():
+    print('\nPlayer: %s' % t_player)
+    get_stats({'Base': df_master.loc[df_master.player == t_player],
+               'Large loss': df_master.loc[(df_master.player == t_player) & (df_master.loss_outcome_large_previous_TF)],
+               'Large win': df_master.loc[(df_master.player == t_player) & (df_master.win_outcome_large_previous_TF)]
+               }
+              )
+
+##############
 
 # ----- HYPOTHESIS TESTING -----
 df_data_summary = create_formatted_output(df_master, cases_f=['zero_outcome_previous_TF',
