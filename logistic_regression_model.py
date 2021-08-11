@@ -7,6 +7,7 @@ import copy
 from assumption_calc_functions import two_sample_test_prop
 import os
 import matplotlib.pyplot as plt
+from summary_stats_analysis import compare_poker_summary_stats
 
 pd.options.display.max_columns = 25
 
@@ -357,6 +358,8 @@ def engineer_features(df_f, big_blind_f=100, small_blind_f=50, large_mult_qual=2
     df_f['zero_outcome_previous_TF'] = (df_f.outcome_previous == 0)  # fold, no blind ("zero" outcome_previous)
     df_f['blind_only_outcome_previous_TF'] = (abs(df_f.outcome_previous) == small_blind_f) | (abs(df_f.outcome_previous) == big_blind_f) | (abs(df_f.outcome_previous) == (big_blind_f + small_blind_f))
     df_f['zero_or_blind_only_outcome_previous_TF'] = df_f['zero_outcome_previous_TF'] | df_f['blind_only_outcome_previous_TF']
+    df_f['zero_or_small_outcome_previous_TF'] = df_f['zero_outcome_previous_TF'] | (abs(df_f.outcome_previous / big_blind_f) < large_mult_qual)
+
     df_f['loss_outcome_xonlyblind_previous_TF'] = df_f['loss_outcome_previous_TF'] & (df_f.outcome_previous != -small_blind_f) & (df_f.outcome_previous != -big_blind_f)
     df_f['win_outcome_xonlyblind_previous_TF'] = df_f['win_outcome_previous_TF'] & (df_f.outcome_previous != (big_blind_f + small_blind_f))
 
@@ -506,47 +509,27 @@ df_master = create_master_data_frame(games, players)
 df_master = engineer_features(df_master)
 print_df_summary(df_master, return_player_summary_f=False)
 
-###### PRELIM EXAM CAN DELETE / FORMALIZE ################
-from poker_funcs import calc_aggressiveness, calc_looseness
-
-
-def get_stats(cases_f):
-    for tn, t_df in cases_f.items():
-        print('Case: %s, looseness = %3.2f, aggressiveness = % 3.2f, num obs = %d' %
-              (tn,
-               calc_looseness(num_calls_f=t_df['num_preflop_call'].sum(),
-                              num_raises_f=t_df['num_preflop_raise'].sum(),
-                              num_tot_obs_f=t_df.shape[0]),
-               calc_aggressiveness(num_raises_f=t_df['num_preflop_raise'].sum(),
-                                   num_checks_f=t_df['num_preflop_check'].sum(),
-                                   num_calls_f=t_df['num_preflop_call'].sum()),
-               t_df.shape[0]
-               )
-              )
-
-
-for t_player in df_master.player.unique():
-    print('\nPlayer: %s' % t_player)
-    get_stats({'Base': df_master.loc[df_master.player == t_player],
-               'Large loss': df_master.loc[(df_master.player == t_player) & (df_master.loss_outcome_large_previous_TF)],
-               'Large win': df_master.loc[(df_master.player == t_player) & (df_master.win_outcome_large_previous_TF)]
-               }
-              )
-
-##############
-
 # ----- HYPOTHESIS TESTING -----
+# compare poker summary measures
+compare_poker_summary_stats(df_master)
+
 df_data_summary = create_formatted_output(df_master, cases_f=['zero_outcome_previous_TF',
                                                               'loss_outcome_previous_TF', 'win_outcome_previous_TF',
                                                               'zero_or_blind_only_outcome_previous_TF',
                                                               'loss_outcome_xonlyblind_previous_TF',
                                                               'win_outcome_xonlyblind_previous_TF',
-                                                              'blind_only_outcome_previous_TF'
+                                                              'blind_only_outcome_previous_TF',
+                                                              'zero_or_small_outcome_previous_TF',
+                                                              'loss_outcome_large_previous_TF',
+                                                              'win_outcome_large_previous_TF'
                                                               ])
 hyp_test_specs = {'test_1': {'baseline': 'zero_outcome_previous_TF',
                              'test_cases': ['loss_outcome_previous_TF', 'win_outcome_previous_TF']},
                   'test_2': {'baseline': 'zero_or_blind_only_outcome_previous_TF',
-                             'test_cases': ['loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF']}}
+                             'test_cases': ['loss_outcome_xonlyblind_previous_TF', 'win_outcome_xonlyblind_previous_TF']},
+                  'test_3': {'baseline': 'zero_or_small_outcome_previous_TF',
+                             'test_cases': ['loss_outcome_large_previous_TF', 'win_outcome_large_previous_TF']}
+                  }
 for specs in hyp_test_specs.values():
     df_data_summary = run_within_hypothesis_tests(df_f=df_data_summary, n_sides_f=2,
                                               baseline_name_f=specs['baseline'],
@@ -554,8 +537,8 @@ for specs in hyp_test_specs.values():
                                               player_names_f=['human', 'ADM'])
 
 # run between hypotehsis tests
-between_test_col_name = 'win_outcome_xonlyblind_previous_TF' #'loss_outcome_xonlyblind_previous_TF'   #'zero_or_blind_only_outcome_previous_TF'
-print('two_sample_test_prop, human v ADM for case: %s' % between_test_col_name)
+between_test_col_name = 'win_outcome_large_previous_TF' # 'win_outcome_xonlyblind_previous_TF' #'loss_outcome_xonlyblind_previous_TF'   #'zero_or_blind_only_outcome_previous_TF'
+print('\n\ntwo_sample_test_prop, human v ADM for case: %s' % between_test_col_name)
 print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc[between_test_col_name, 'human' + '_perc_preflop_fold'],
                                                              df_data_summary.loc[between_test_col_name, 'ADM' + '_perc_preflop_fold'],
                                                              df_data_summary.loc[between_test_col_name, 'human' + '_nobs'],
@@ -566,16 +549,20 @@ print('t-stat: %3.4f\np-value: %3.4f' % two_sample_test_prop(df_data_summary.loc
 # ----- SPECIFY MODEL PARAMS ----
 endog_var_name = 'preflop_fold_TF'
 add_constant = True
-exog_var_name = ['human_player_TF', 'preflop_hand_num_raise'] # , 'preflop_hand_tot_amount_raise', 'human_player_TF',
+filter_players = list(df_master.player.unique()) # ['MrBlue', 'Pluribus'] #['Bill', 'MrWhite', 'MrBlue', 'MrPink', 'Eddie', 'Pluribus', 'MrOrange']
+exog_var_name = ['player', 'preflop_hand_num_raise'] # , 'preflop_hand_tot_amount_raise', 'human_player_TF',
 ordinal_vars = ['slansky', 'seat_map']    # 'seat_map': seat_map reassigns the first seat to the player sitting in seat 3; this is to allow for ordinal varaibles to account for nonlinearity in seats 1 and 2 as a result of blinds
 bool_vars = {}
 categorical_drop_vals = {'seat': '3', 'stack_rank': '1', 'player': 'Pluribus'}    # 'player': 'Pluribus',
-interaction_vars = [('loss_outcome_xonlyblind_previous_TF', 'human_player_TF'), ('win_outcome_xonlyblind_previous_TF', 'human_player_TF')]
+interaction_vars = [('loss_outcome_large_previous_TF', 'human_player_TF'), ('win_outcome_large_previous_TF', 'human_player_TF')] #[('loss_outcome_xonlyblind_previous_TF', 'human_player_TF'), ('win_outcome_xonlyblind_previous_TF', 'human_player_TF')]
 scale_vars_list = ['start_stack', 'preflop_hand_tot_amount_raise']
 
 # filter and map
 df_data = df_master.reindex()
 df_data['seat_map'] = df_data['seat'].map({'1': '5', '2': '6', '3': '1', '4': '2', '5': '3', '6': '4'})
+df_data.drop(df_data.index[~df_data.player.isin(filter_players)], inplace=True)
+
+# df_data.to_csv(os.path.join(fp_output, 'deep_learning_data.csv'))   ####### just used to create structured data set for deep learning model development
 
 # logistic_model \
 logistic_model = LogisticRegression(endog_name_f=endog_var_name, exog_name_f=exog_var_name, data_f=df_data,
