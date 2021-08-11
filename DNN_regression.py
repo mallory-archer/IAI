@@ -39,7 +39,7 @@ fn_input = 'deep_learning_data.csv'
 df = pd.read_csv(os.path.join(fp_input, fn_input))
 
 # --- add features ----
-df = pd.merge(df, df.loc[~df['preflop_fold_TF']].groupby(['game', 'hand']).player.nunique().reset_index().rename(columns={'player': 'tot_num_players_play_preflop'}), how='left', on=['game', 'hand'])
+# df = pd.merge(df, df.loc[~df['preflop_fold_TF']].groupby(['game', 'hand']).player.nunique().reset_index().rename(columns={'player': 'tot_num_players_play_preflop'}), how='left', on=['game', 'hand'])
 
 df['win_TF'] = df.outcome > 0
 ########
@@ -58,7 +58,7 @@ colnames = ['game', 'hand', 'player', 'slansky', 'seat',
               'preflop_fold_TF']
 
 numeric_feature_names = ['slansky', 'preflop_hand_tot_amount_raise', 'preflop_hand_num_raise',
-                         'tot_num_players_play_preflop']    #, 'preflop_hand_num_raise']   # ['game', 'hand', 'slansky',
+                         'preflop_num_final_participants']    #, 'preflop_hand_num_raise']   # ['game', 'hand', 'slansky',
                          # 'preflop_hand_tot_amount_raise', 'preflop_hand_num_raise',
                          # 'outcome_previous', 'human_player_TF',
                          # 'blind_only_outcome_previous_TF',
