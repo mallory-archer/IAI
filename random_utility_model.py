@@ -24,8 +24,8 @@ fraction_of_data_to_use_for_estimation = .3
 save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
 
 # ---- multi start params
-num_multistarts = 50000
-save_TF = True
+num_multistarts = 1
+save_TF = False
 save_iter = 10000
 t_save_index_start = 150000
 
@@ -41,6 +41,9 @@ players = data['players']
 games = data['games']
 
 # probability and payoffs by seat and slansky rank
+# with open(os.path.join(fp_output, fn_output), 'rb') as f:
+#     pred_dict = json.load(f)
+
 try:
     with open(os.path.join(fp_output, fn_prob_payoff_dict), 'r') as f:
         t_dict = json.load(f)
@@ -106,15 +109,30 @@ class RandomUtilityModel:
         t_total_obs = 0
         for rank in self.data_f.keys():
             for seat in self.data_f[rank].keys():
-                t_LLi = calc_LLi(X=self.data_f[rank][seat]['n_chosen']['play'],
-                                 Y=self.data_f[rank][seat]['n_chosen']['fold'],
-                                 I=0,
-                                 util_X=calc_CRRA_utility(outcomes=self.data_f[rank][seat]['params']['play'], omega=self.omega_f),
-                                 util_Y=calc_CRRA_utility(outcomes=self.data_f[rank][seat]['params']['fold'], omega=self.omega_f),
-                                 kappa=self.kappa_f,
-                                 lam=self.lambda_f)
-                LLi.append(t_LLi)
-                t_total_obs += sum(self.data_f[rank][seat]['n_chosen'].values())
+                for t_select_item in self.data_f[rank][seat]:   #######
+                    t_LLi = calc_LLi(X=t_select_item['n_chosen']['play'], #######
+                                     Y=t_select_item['n_chosen']['fold'], #######
+                                     I=0, #######
+                                     util_X=calc_CRRA_utility(outcomes=t_select_item['params']['play'], #######
+                                                              omega=self.omega_f), #######
+                                     util_Y=calc_CRRA_utility(outcomes=t_select_item['params']['fold'], #######
+                                                              omega=self.omega_f), #######
+                                     kappa=self.kappa_f, #######
+                                     lam=self.lambda_f) #######
+                    LLi.append(t_LLi) #######
+                    t_total_obs += sum(t_select_item['n_chosen'].values()) #######
+                del t_select_item #######
+                #######
+                # t_LLi = calc_LLi(X=self.data_f[rank][seat]['n_chosen']['play'],
+                #                  Y=self.data_f[rank][seat]['n_chosen']['fold'],
+                #                  I=0,
+                #                  util_X=calc_CRRA_utility(outcomes=self.data_f[rank][seat]['params']['play'], omega=self.omega_f),
+                #                  util_Y=calc_CRRA_utility(outcomes=self.data_f[rank][seat]['params']['fold'], omega=self.omega_f),
+                #                  kappa=self.kappa_f,
+                #                  lam=self.lambda_f)
+                # LLi.append(t_LLi)
+                # t_total_obs += sum(self.data_f[rank][seat]['n_chosen'].values())
+                #####
         return -sum(LLi)/t_total_obs
 
     # def negLL_RPM(self, params):
@@ -259,7 +277,9 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
             except KeyError:
                 num_choice_situations_dropped += 1
     del game_num, hands, hand_num, t_slansky_rank, t_seat_num
-    print('Dropped a total of %d for KeyErrors \n(likely b/c no observations for combination of slansky/seat/stack for prob and payoff estimates.) \nKept a total of %d choice situations' % (num_choice_situations_dropped, len(choice_situations_f)))
+    print('Dropped a total of %d for KeyErrors \n'
+          '(likely b/c no observations for combination of slansky/seat/stack for prob and payoff estimates.) \n'
+          'Kept a total of %d choice situations' % (num_choice_situations_dropped, len(choice_situations_f)))
     return choice_situations_f
 
 
@@ -334,12 +354,12 @@ def generate_synthetic_data():
 
 def reformat_choice_situations_for_model(choice_situations_f):
     # create dictionary of option params
-    choice_param_dictionary_f = {rank: {seat: {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations_f])} for rank in set([cs.slansky_strength for cs in choice_situations_f])}
+    choice_param_dictionary_f = {int(rank): {int(seat): {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations_f])} for rank in set([cs.slansky_strength for cs in choice_situations_f])}
     for cs in choice_situations_f:
         for i in range(len(cs.option_names)):
-            choice_param_dictionary_f[cs.slansky_strength][cs.seat]['params'].update(
+            choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['params'].update(
                 {cs.option_names[i]: list(cs.options[i].outcomes.values())})
-        choice_param_dictionary_f[cs.slansky_strength][cs.seat]['n_chosen'][cs.choice] += 1
+        choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['n_chosen'][cs.choice] += 1
 
     # if no observations exist for a given rank and seat, drop the dictionary item since we have no information with which to estimate the model
     t_drop_keys = list()
@@ -400,12 +420,12 @@ def print_auditing_calcs(t_choice_param_dictionary, t_kappa, t_lambda, t_omega):
     for task in ['cs1', 'cs2', 'cs3', 'cs4']:
         for p in range(1, 11):
             print('TASK %s for p=%3.2f' % (task, p / 10))
-            print('Actual choice:   %3.2f' % (t_choice_param_dictionary[int(task.strip('cs'))][p]['n_chosen']['play'] / (
-                    t_choice_param_dictionary[int(task.strip('cs'))][p]['n_chosen']['play'] +
-                    t_choice_param_dictionary[int(task.strip('cs'))][p]['n_chosen']['fold'])))
+            print('Actual choice:   %3.2f' % (t_choice_param_dictionary[int(task.strip('cs'))][p][0]['n_chosen']['play'] / (
+                    t_choice_param_dictionary[int(task.strip('cs'))][p][0]['n_chosen']['play'] +
+                    t_choice_param_dictionary[int(task.strip('cs'))][p][0]['n_chosen']['fold'])))
             print('Probability RUM:     %3.2f' % calc_RUM_prob(
-                calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p]['params']['play'], t_omega),
-                [calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p]['params'][opt], t_omega) for
+                calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p][0]['params']['play'], t_omega),
+                [calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p][0]['params'][opt], t_omega) for
                  opt in ['play', 'fold']], t_lambda, t_kappa))
             print('log-likelihood RUM: %3.2f' % - RandomUtilityModel(
                 {int(task.strip('cs')): {p: t_choice_param_dictionary[int(task.strip('cs'))][p]}}).negLL_RUM(
@@ -572,6 +592,12 @@ else:
 choice_param_dictionary = reformat_choice_situations_for_model(random.sample(t_candidates, round(fraction_of_data_to_use_for_estimation * len(t_candidates))))
 del t_candidates
 
+################ THIS IS FOR REFORMATTING PROBS ################
+for rank in choice_param_dictionary.keys():
+    for seat in choice_param_dictionary[rank].keys():
+        choice_param_dictionary[rank][seat] = [choice_param_dictionary[rank][seat]]
+###################
+
 # ---- synthetic test data -----
 # kappa_actual = 0.034    # kappa_RPM = 0.051
 # lambda_actual = 0.275   # lambda_RPM = 2.495
@@ -585,13 +611,13 @@ del t_candidates
 model = RandomUtilityModel(choice_param_dictionary)
 
 #######
-# ---- debugging / audititing, can delete
-t_sum = list()
-for rank in model.data_f.keys():
-    for seat in model.data_f[rank].keys():
-        t_sum.append(sum(model.data_f[rank][seat]['n_chosen'].values()))
-print('Total observations in choice_param_dictionary: %d' % sum(t_sum))
-del t_sum
+# ---- debugging / auditing, can delete
+# t_sum = list()
+# for rank in model.data_f.keys():
+#     for seat in model.data_f[rank].keys():
+#         t_sum.append(sum(model.data_f[rank][seat]['n_chosen'].values()))
+# print('Total observations in choice_param_dictionary: %d' % sum(t_sum))
+# del t_sum
 ######
 
 # --- fit one model

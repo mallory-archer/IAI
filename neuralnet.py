@@ -60,12 +60,14 @@ df = pd.read_csv(os.path.join(fp_input, fn_input))
 # df = pd.merge(df, df.loc[~df['preflop_fold_TF']].groupby(['game', 'hand']).player.nunique().reset_index().rename(columns={'player': 'tot_num_players_play_preflop'}), how='left', on=['game', 'hand'])
 
 df['win_TF'] = df.outcome > 0
+df['preflop_num_final_participants_more_than_1'] = df.preflop_num_final_participants > 1
 
 ########
 
 # ----- Define parameters -----
 target_name = 'win_TF'  #'preflop_fold_TF' # 'outcome'
-use_observation_conds = []  #[{'col_name': 'preflop_fold_TF', 'col_use_val': False}]     # for predicting probability of winning the hand during a preflop decision, only use hands where the player chose to play
+use_observation_conds = [{'col_name': 'preflop_play_TF', 'col_use_val': True},
+                         {'col_name': 'preflop_num_final_participants_more_than_1', 'col_use_val': True}]  #[{'col_name': 'preflop_fold_TF', 'col_use_val': False}]     # for predicting probability of winning the hand during a preflop decision, only use hands where the player chose to play
 batch_size = 32
 epochs = 10
 optimizer = 'adam'
@@ -82,16 +84,7 @@ colnames = ['game', 'hand', 'player', 'slansky', 'seat',
               'loss_outcome_xonlyblind_previous_TF', 'loss_outcome_large_previous_TF',
               'win_outcome_xonlyblind_previous_TF', 'win_outcome_large_previous_TF',
               'preflop_fold_TF']
-numeric_feature_names = ['slansky', 'preflop_hand_tot_amount_raise', 'preflop_hand_num_raise',
-                         'preflop_num_final_participants'] #, 'preflop_hand_tot_amount_raise', 'preflop_hand_num_raise']   # ['game', 'hand', 'slansky',
-                         # 'preflop_hand_tot_amount_raise', 'preflop_hand_num_raise',
-                         # 'outcome_previous', 'human_player_TF',
-                         # 'blind_only_outcome_previous_TF',
-                         # 'zero_or_blind_only_outcome_previous_TF', 'zero_or_small_outcome_previous_TF',
-                         # 'loss_outcome_xonlyblind_previous_TF',
-                         # 'loss_outcome_large_previous_TF', 'win_outcome_xonlyblind_previous_TF',
-                         # 'win_outcome_large_previous_TF'
-                         # ]
+numeric_feature_names = ['slansky'] # 'preflop_hand_tot_amount_raise', 'preflop_hand_num_raise', 'preflop_num_final_participants'
 bucketized_feature_names = {}   # {feature_name: [list of bucket boundaries]}
 categorical_feature_names = ['seat']      # ['seat', 'player', 'outcome_previous_cat']
 embedding_feature_names = {}    # {feature_name: int_for_num_dimensions}
@@ -153,6 +146,7 @@ test_ds = df_to_dataset(dataframe_f=test, target_name_f=target_name, shuffle_f=F
 print('Number of features: %d' % feature_layer(next(iter(train_ds))[0]).numpy().shape[1])
 
 # sns.pairplot(train_ds)
+# sns.pairplot(train[select_feature_names])
 
 # ------ TRAIN MODEL -----
 model = tf.keras.Sequential([
