@@ -144,7 +144,7 @@ def plot_loss(log):
 
 
 def calc_pot_amount(df_f):
-    return df_f.loc[df.preflop_play_TF & ~df.win_TF, 'preflop_pot_stake'].sum() - df_f.loc[~df.preflop_play_TF, 'outcome'].sum()
+    return df_f.loc[df.preflop_play_TF & ~df.win_TF, 'preflop_pot_stake'].sum() + (-1 * df_f.loc[~df.preflop_play_TF, 'outcome'].sum())
 
 
 def create_pred_dict(df_f, fp_output_f, fn_output_f, save_TF=False):
@@ -214,7 +214,7 @@ def create_payoff_dict(df_f, fp_output_f, fn_output_f, save_TF=False):
 fp_output = 'output'
 fn_output_prob = 'prob_dict_dnn.json'
 fn_output_payoff = 'payoff_dict_dnn.json'
-save_dict_TF = False
+save_dict_TF = True
 
 # --- features
 target_name = 'win_TF'
@@ -222,7 +222,7 @@ numeric_feature_names = ['slansky'] #, 'preflop_hand_tot_amount_raise', 'preflop
 bucketized_feature_names = {}   # {feature_name: [list of bucket boundaries]}
 categorical_feature_names = ['seat']      # ['seat', 'player', 'outcome_previous_cat']
 embedding_feature_names = {}    # {feature_name: int_for_num_dimensions}
-crossed_feature_names = [('player', 'opponents_string')]  #[('player', 'opponent_pluribus')] #[('seat', 'player')] #[('player', 'opponents_string')] #[('player', 'opponent_pluribus')]   #   [['human_player_TF', 'outcome_previous_cat'], ['seat', 'player']]      # dictionary of list of tuples: [([feature1_name, feature2_name], int_hash_bucket_size)]    [['human_player_TF', 'outcome_previous_cat'], ['seat', 'player']]
+crossed_feature_names = [('player', 'seat'), ('seat', 'slansky')] #[('player', 'opponents_string')]  #[('player', 'opponent_pluribus')] #[('seat', 'player')] #[('player', 'opponents_string')] #[('player', 'opponent_pluribus')]   #   [['human_player_TF', 'outcome_previous_cat'], ['seat', 'player']]      # dictionary of list of tuples: [([feature1_name, feature2_name], int_hash_bucket_size)]    [['human_player_TF', 'outcome_previous_cat'], ['seat', 'player']]
 
 # --- segmenting
 obs_use_conds = [{'col_name': 'preflop_play_TF', 'col_use_val': True},
@@ -236,11 +236,11 @@ probability_model_params = {'width_hidden_layer_f': 128,
                             'optimizer_f': 'adam',
                             'loss_f': tf.keras.losses.BinaryCrossentropy(from_logits=True),
                             'metric_f': ['accuracy']}
-payoff_model_params = {'width_hidden_layer_f': 64,
-                       'activation_hidden_f': 'relu',
-                       'activation_output_f': 'sigmoid',
-                       'optimizer_f': tf.keras.optimizers.Adam(0.001),
-                       'loss_f': 'mean_squared_error'}     # activation_output_f and mean_squared_error not included in regression example code, may need to delete these?
+# payoff_model_params = {'width_hidden_layer_f': 64,
+#                        'activation_hidden_f': 'relu',
+#                        'activation_output_f': 'sigmoid',
+#                        'optimizer_f': tf.keras.optimizers.Adam(0.001),
+#                        'loss_f': 'mean_squared_error'}     # activation_output_f and mean_squared_error not included in regression example code, may need to delete these?
 epochs = 500
 patience = 25   # early stopping criteria to prevent overtraining (number of consistent increaess in valuation loss
 
@@ -364,12 +364,18 @@ pred_dict = create_pred_dict(df, fp_output, fn_output_prob, save_TF=save_dict_TF
 
 # ultimate win payoff = preflop amount on table + e = num_preflop_play * preflop stake + sum(outcome|fold)
 # lose payoff = preflop_stake + e
-# side calculations
+# ----------side calculations
+# --- calculate amount required to put in pot if raises occur
 df = df.merge(df.loc[df.preflop_action.apply(lambda x: x.find('r') > -1), 'preflop_action'].apply(lambda x: float(x[1:])).rename('preflop_raise_amount_tot_stake'), how='left', left_index=True, right_index=True)
 df['preflop_pot_stake'] = df.groupby(['game', 'hand']).preflop_raise_amount_tot_stake.transform('max')
 df.drop(columns=['preflop_raise_amount_tot_stake'], inplace=True)
+
+# ---- calculate amount required to put in pot if no raises occur and just blinds are called
+df.loc[df.preflop_hand_num_raise == 0, 'preflop_pot_stake'] = 100   # if no one raises, the stake is the amount of the big blind
+
 df_preflop_pot_amount = df.groupby(['game', 'hand']).apply(calc_pot_amount).rename('preflop_pot_tot_amount').reset_index()
 df = df.merge(df_preflop_pot_amount, how='left', on=['game', 'hand'])
+del df_preflop_pot_amount
 
 # --- check to see how well outcomes correlate with preflop factors
 # plt.figure()
@@ -411,6 +417,8 @@ df.loc[df.preflop_play_TF & (df.seat == 2), 'predicted_loss_fold'] = -100 # if y
 df.loc[~df.preflop_play_TF , 'predicted_loss_fold'] = df.loc[~df.preflop_play_TF, 'outcome']   # if you folded
 
 payoff_dict = create_payoff_dict(df, fp_output, fn_output_payoff, save_TF=save_dict_TF)
+
+#######
 
 
 #### ====== EXAMINING IMPLIED EXPECTED VALUES ################

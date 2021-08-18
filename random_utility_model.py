@@ -7,7 +7,9 @@ import pandas as pd
 from scipy.optimize import minimize, Bounds
 import binascii
 import random
+import math
 
+import matplotlib.pyplot as plt
 
 from assumption_calc_functions import calc_prob_winning_slansky_rank
 from assumption_calc_functions import create_game_hand_index
@@ -15,12 +17,14 @@ from assumption_calc_functions import create_game_hand_index
 # ----- File I/O params -----
 fp_output = 'output'
 fn_prob_payoff_dict = 'prob_payoff_dicts.json'
+fn_prob_dict = 'prob_dict_dnn.json'
+fn_payoff_dict = 'payoff_dict_dnn.json'
 
 # ---- Params -----
 # --- data selection params
 select_player = 'Bill'
-select_case = 'post_loss_excl_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
-fraction_of_data_to_use_for_estimation = .3
+select_case = 'all' #'post_loss_excl_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
+fraction_of_data_to_use_for_estimation = 1
 save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
 
 # ---- multi start params
@@ -45,11 +49,15 @@ games = data['games']
 #     pred_dict = json.load(f)
 
 try:
-    with open(os.path.join(fp_output, fn_prob_payoff_dict), 'r') as f:
-        t_dict = json.load(f)
-        prob_dict = t_dict['prob_dict']
-        payoff_dict = t_dict['payoff_dict']
-        del t_dict
+    # with open(os.path.join(fp_output, fn_prob_payoff_dict), 'r') as f:
+    #     t_dict = json.load(f)
+    #     prob_dict = t_dict['prob_dict']
+    #     payoff_dict = t_dict['payoff_dict']
+    #     del t_dict
+    with open(os.path.join(fp_output, fn_prob_dict), 'r') as f:
+        prob_dict = json.load(f)
+    with open(os.path.join(fp_output, fn_payoff_dict), 'r') as f:
+        payoff_dict = json.load(f)
 except FileNotFoundError:
     print('No probability and payoff dictionaries saved down in output folder')
     prob_dict, payoff_dict = calc_prob_winning_slansky_rank(games, slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None)
@@ -109,30 +117,19 @@ class RandomUtilityModel:
         t_total_obs = 0
         for rank in self.data_f.keys():
             for seat in self.data_f[rank].keys():
-                for t_select_item in self.data_f[rank][seat]:   #######
-                    t_LLi = calc_LLi(X=t_select_item['n_chosen']['play'], #######
-                                     Y=t_select_item['n_chosen']['fold'], #######
-                                     I=0, #######
-                                     util_X=calc_CRRA_utility(outcomes=t_select_item['params']['play'], #######
-                                                              omega=self.omega_f), #######
-                                     util_Y=calc_CRRA_utility(outcomes=t_select_item['params']['fold'], #######
-                                                              omega=self.omega_f), #######
-                                     kappa=self.kappa_f, #######
-                                     lam=self.lambda_f) #######
-                    LLi.append(t_LLi) #######
-                    t_total_obs += sum(t_select_item['n_chosen'].values()) #######
-                del t_select_item #######
-                #######
-                # t_LLi = calc_LLi(X=self.data_f[rank][seat]['n_chosen']['play'],
-                #                  Y=self.data_f[rank][seat]['n_chosen']['fold'],
-                #                  I=0,
-                #                  util_X=calc_CRRA_utility(outcomes=self.data_f[rank][seat]['params']['play'], omega=self.omega_f),
-                #                  util_Y=calc_CRRA_utility(outcomes=self.data_f[rank][seat]['params']['fold'], omega=self.omega_f),
-                #                  kappa=self.kappa_f,
-                #                  lam=self.lambda_f)
-                # LLi.append(t_LLi)
-                # t_total_obs += sum(self.data_f[rank][seat]['n_chosen'].values())
-                #####
+                for t_select_item in self.data_f[rank][seat]:
+                    t_LLi = calc_LLi(X=t_select_item['n_chosen']['play'],
+                                     Y=t_select_item['n_chosen']['fold'],
+                                     I=0,
+                                     util_X=calc_CRRA_utility(outcomes=t_select_item['params']['play'],
+                                                              omega=self.omega_f),
+                                     util_Y=calc_CRRA_utility(outcomes=t_select_item['params']['fold'],
+                                                              omega=self.omega_f),
+                                     kappa=self.kappa_f,
+                                     lam=self.lambda_f)
+                    LLi.append(t_LLi)
+                    t_total_obs += sum(t_select_item['n_chosen'].values())
+                del t_select_item
         return -sum(LLi)/t_total_obs
 
     # def negLL_RPM(self, params):
@@ -188,19 +185,20 @@ class RandomUtilityModel:
             print('%s: %s' % (k, v))
 
 
-def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_dict_f):
-    def get_min_observed_payoff(player_ff, game_hand_index_ff):
+def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
+    def get_min_observed_payoff(player_ff, payoff_dict_ff):
         # get payoffs to examine min payoff for shifting into postive domain
         obs_avg_payoffs = list()
-        for game_num, hands in game_hand_index_ff.items():
-            for hand_num in hands:
-                try:
-                    t_slansky_rank = str(player_ff.odds[game_num][hand_num]['slansky'])
-                    t_seat_num = str(player_ff.seat_numbers[game_num][hand_num])
-                    obs_avg_payoffs.append(payoff_dict_f[t_slansky_rank][t_seat_num]['win_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['win_count'])
-                    obs_avg_payoffs.append(payoff_dict_f[t_slansky_rank][t_seat_num]['loss_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['loss_count'])
-                except KeyError:
-                    print('Error for keys game %s and hand %s' % (game_num, hand_num))
+        for game_num, hands in payoff_dict_ff[player_ff.name].items():
+            for hand_num, payoffs in hands.items():
+                for outcome, outcomes in payoffs.items():
+                    try:
+                        obs_avg_payoffs = obs_avg_payoffs + list(outcomes.values())
+                    except KeyError:
+                        print('Error for keys game %s and hand %s' % (game_num, hand_num))
+        plt.figure()
+        plt.hist(obs_avg_payoffs)
+        plt.title('Histogram of predicted payoffs for %s from payoff dictionary (unadjusted)' % player_ff.name)
         return min(obs_avg_payoffs)
 
     choice_situations_f = list()
@@ -209,74 +207,72 @@ def generate_choice_situations(player_f, game_hand_index_f, prob_dict_f, payoff_
     big_blind = 100
     small_blind = 50
     payoff_units_f = 1/big_blind
-    payoff_shift_f = get_min_observed_payoff(player_f, game_hand_index_f) * -1
+    payoff_shift_f = get_min_observed_payoff(player_f, payoff_dict_f) * -1
 
-    for game_num, hands in game_hand_index_f.items():
-        for hand_num in hands:
+    for game_num, hands in payoff_dict_f[player_f.name].items():
+        for hand_num, probs in hands.items():
+            # --- play
+            tplay_win_prob = prob_dict_f[player_f.name][game_num][hand_num]
+            tplay_win_payoff = payoff_dict_f[player_f.name][game_num][hand_num]['play']['win']
+            tplay_lose_payoff = payoff_dict_f[player_f.name][game_num][hand_num]['play']['lose']
+
+            # --- fold
+            tfold_win_prob = 0  # cannot win under folding scenario
+            tfold_lose_payoff = payoff_dict_f[player_f.name][game_num][hand_num]['fold']['lose']
+
+            # --- shift/scale payoffs ----
+            tplay_win_payoff = (tplay_win_payoff + payoff_shift_f) * payoff_units_f
+            tplay_lose_payoff = (tplay_lose_payoff + payoff_shift_f) * payoff_units_f
+            tfold_lose_payoff = (tfold_lose_payoff + payoff_shift_f) * payoff_units_f
+
+            t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
+                                                              'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
+                                Option(name='fold', outcomes={'lose': {'payoff': tfold_lose_payoff, 'prob': 1 - tfold_win_prob}})]
             try:
-                t_slansky_rank = str(player_f.odds[game_num][hand_num]['slansky'])
-                t_seat_num = str(player_f.seat_numbers[game_num][hand_num])
-
-                # --- aggregate to rank level
-                tplay_win_prob = prob_dict_f[t_slansky_rank][t_seat_num]['win'] / prob_dict_f[t_slansky_rank][t_seat_num]['play_count']
-                tplay_win_payoff = payoff_dict_f[t_slansky_rank][t_seat_num]['win_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['win_count']
-                tplay_lose_payoff = payoff_dict_f[t_slansky_rank][t_seat_num]['loss_sum'] / payoff_dict_f[t_slansky_rank][t_seat_num]['loss_count']
-
-                tfold_win_prob = 0  # cannot win under folding scenario
-                if player_f.blinds[game_num][hand_num]['big']:
-                    tfold_lose_payoff = (big_blind * -1)
-                elif player_f.blinds[game_num][hand_num]['small']:
-                    tfold_lose_payoff = (small_blind * -1)
-                else:
-                    tfold_lose_payoff = 0
-
-                # --- shift/scale payoffs ----
-                tplay_win_payoff = (tplay_win_payoff + payoff_shift_f) * payoff_units_f
-                tplay_lose_payoff = (tplay_lose_payoff + payoff_shift_f) * payoff_units_f
-                tfold_lose_payoff = (tfold_lose_payoff + payoff_shift_f) * payoff_units_f
-
-                t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
-                                                                  'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
-                                    Option(name='fold', outcomes={'lose': {'payoff': tfold_lose_payoff, 'prob': 1 - tfold_win_prob}})]
-                try:
-                    t_post_loss_bool = (player_f.outcomes[game_num][str(int(hand_num)-1)] < 0)
-                    t_post_win_bool = (player_f.outcomes[game_num][str(int(hand_num) - 1)] > 0)
-                    t_neutral_bool = (not t_post_loss_bool) and (not t_post_win_bool)
-                    t_post_loss_xonlyblind_previous_bool = t_post_loss_bool & (
-                            player_f.outcomes[game_num][str(int(hand_num)-1)] != -small_blind) & (
-                            player_f.outcomes[game_num][str(int(hand_num)-1)] != -big_blind)
-                    t_post_win_outcome_xonlyblind_previous_bool = t_post_win_bool & (
-                                player_f.outcomes[game_num][str(int(hand_num)-1)] != (big_blind + small_blind))
-                    t_neutral_xonlyblind_bool = (not t_post_loss_xonlyblind_previous_bool) & (not t_post_win_outcome_xonlyblind_previous_bool)
-                except KeyError:
-                    t_post_loss_bool = None
-                    t_post_win_bool = None
-                    t_neutral_bool = None
-                    t_post_loss_xonlyblind_previous_bool = None
-                    t_post_win_outcome_xonlyblind_previous_bool = None
-                    t_neutral_xonlyblind_bool = None
-
-                # Class ChoiceSituaiton accepts additional specification of "ordered" or "dominant" gamble type,
-                # currently do not have ordered vs. dominant type working
-                t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:],
-                                                     sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop']['final'] == 'f' else "play",
-                                                     slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
-                                                     stack_rank=player_f.stack_ranks[game_num][hand_num],
-                                                     seat=player_f.seat_numbers[game_num][hand_num],
-                                                     post_loss=t_post_loss_bool,
-                                                     post_win=t_post_win_bool,
-                                                     post_neutral=t_neutral_bool,
-                                                     post_loss_excl_blind_only=t_post_loss_xonlyblind_previous_bool,
-                                                     post_win_excl_blind_only=t_post_win_outcome_xonlyblind_previous_bool,
-                                                     post_neutral_or_blind_only=t_neutral_xonlyblind_bool
-                                                     )
-
-                choice_situations_f.append(t_choice_situation)
-
-                del t_choice_situation
+                t_post_loss_bool = (player_f.outcomes[game_num][str(int(hand_num)-1)] < 0)
+                t_post_win_bool = (player_f.outcomes[game_num][str(int(hand_num) - 1)] > 0)
+                t_neutral_bool = (not t_post_loss_bool) and (not t_post_win_bool)
+                t_post_loss_xonlyblind_previous_bool = t_post_loss_bool & (
+                        player_f.outcomes[game_num][str(int(hand_num)-1)] != -small_blind) & (
+                        player_f.outcomes[game_num][str(int(hand_num)-1)] != -big_blind)
+                t_post_win_outcome_xonlyblind_previous_bool = t_post_win_bool & (
+                            player_f.outcomes[game_num][str(int(hand_num)-1)] != (big_blind + small_blind))
+                t_neutral_xonlyblind_bool = (not t_post_loss_xonlyblind_previous_bool) & (not t_post_win_outcome_xonlyblind_previous_bool)
             except KeyError:
-                num_choice_situations_dropped += 1
-    del game_num, hands, hand_num, t_slansky_rank, t_seat_num
+                t_post_loss_bool = None
+                t_post_win_bool = None
+                t_neutral_bool = None
+                t_post_loss_xonlyblind_previous_bool = None
+                t_post_win_outcome_xonlyblind_previous_bool = None
+                t_neutral_xonlyblind_bool = None
+
+            # Class ChoiceSituaiton accepts additional specification of "ordered" or "dominant" gamble type,
+            # currently do not have ordered vs. dominant type working
+            t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:],
+                                                 sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop']['final'] == 'f' else "play",
+                                                 slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
+                                                 stack_rank=player_f.stack_ranks[game_num][hand_num],
+                                                 seat=player_f.seat_numbers[game_num][hand_num],
+                                                 post_loss=t_post_loss_bool,
+                                                 post_win=t_post_win_bool,
+                                                 post_neutral=t_neutral_bool,
+                                                 post_loss_excl_blind_only=t_post_loss_xonlyblind_previous_bool,
+                                                 post_win_excl_blind_only=t_post_win_outcome_xonlyblind_previous_bool,
+                                                 post_neutral_or_blind_only=t_neutral_xonlyblind_bool
+                                                 )
+
+            choice_situations_f.append(t_choice_situation)
+            del t_choice_situation
+    del game_num, hands, hand_num
+
+    t_exp_vals = [cs.options[0].outcomes['win']['prob'] * cs.options[0].outcomes['win']['payoff'] +
+                  cs.options[0].outcomes['lose']['prob'] * cs.options[0].outcomes['lose']['payoff'] +
+                  cs.options[1].outcomes['lose']['prob'] * cs.options[1].outcomes['lose']['payoff']
+                  for cs in choice_situations_f]
+    plt.figure()
+    plt.hist(t_exp_vals, bins=100)
+    plt.title('Choice situation prob/payoff expected values for %s' % player_f.name)
+
     print('Dropped a total of %d for KeyErrors \n'
           '(likely b/c no observations for combination of slansky/seat/stack for prob and payoff estimates.) \n'
           'Kept a total of %d choice situations' % (num_choice_situations_dropped, len(choice_situations_f)))
@@ -354,18 +350,34 @@ def generate_synthetic_data():
 
 def reformat_choice_situations_for_model(choice_situations_f):
     # create dictionary of option params
-    choice_param_dictionary_f = {int(rank): {int(seat): {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations_f])} for rank in set([cs.slansky_strength for cs in choice_situations_f])}
+    ##### OLD FORMAT #####
+    # choice_param_dictionary_f = {int(rank): {int(seat): {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations_f])} for rank in set([cs.slansky_strength for cs in choice_situations_f])}
+    # for cs in choice_situations_f:
+    #     for i in range(len(cs.option_names)):
+    #         choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['params'].update(
+    #             {cs.option_names[i]: list(cs.options[i].outcomes.values())})
+    #     choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['n_chosen'][cs.choice] += 1
+    ################
+
+    choice_param_dictionary_f = {int(rank): {int(seat): [] for seat in set([cs.seat for cs in choice_situations_f])} for
+                                 rank in set([cs.slansky_strength for cs in choice_situations_f])}
     for cs in choice_situations_f:
+        t_dict = {'params': {}, 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None}
         for i in range(len(cs.option_names)):
-            choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['params'].update(
-                {cs.option_names[i]: list(cs.options[i].outcomes.values())})
-        choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['n_chosen'][cs.choice] += 1
+            t_dict['params'].update({cs.option_names[i]: list(cs.options[i].outcomes.values())})
+        t_dict['n_chosen'][cs.choice] += 1
+        choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)].append(t_dict)
 
     # if no observations exist for a given rank and seat, drop the dictionary item since we have no information with which to estimate the model
     t_drop_keys = list()
     for rank in choice_param_dictionary_f.keys():
         for seat in choice_param_dictionary_f[rank].keys():
-            if sum(choice_param_dictionary_f[rank][seat]['n_chosen'].values()) == 0:
+            # ---- old format ------
+            # if sum(choice_param_dictionary_f[rank][seat]['n_chosen'].values()) == 0:
+            #     t_drop_keys.append((rank, seat))
+            #     print('No observations for rank %s seat %s' % (rank, seat))
+            #------ old format ------
+            if len(choice_param_dictionary_f[rank][seat]) == 0:
                 t_drop_keys.append((rank, seat))
                 print('No observations for rank %s seat %s' % (rank, seat))
     for pair in t_drop_keys:
@@ -558,7 +570,7 @@ def calc_mle_tstat(param, varcov):
 
 # ====== Import data ======
 # ---- actual data ----
-choice_situations = generate_choice_situations(player_f=players[select_player_index], game_hand_index_f=game_hand_player_index, payoff_dict_f=payoff_dict, prob_dict_f=prob_dict)
+choice_situations = generate_choice_situations(player_f=players[select_player_index], payoff_dict_f=payoff_dict, prob_dict_f=prob_dict)
 
 #######
 # ---- debugging, can delete ------
@@ -592,12 +604,6 @@ else:
 choice_param_dictionary = reformat_choice_situations_for_model(random.sample(t_candidates, round(fraction_of_data_to_use_for_estimation * len(t_candidates))))
 del t_candidates
 
-################ THIS IS FOR REFORMATTING PROBS ################
-for rank in choice_param_dictionary.keys():
-    for seat in choice_param_dictionary[rank].keys():
-        choice_param_dictionary[rank][seat] = [choice_param_dictionary[rank][seat]]
-###################
-
 # ---- synthetic test data -----
 # kappa_actual = 0.034    # kappa_RPM = 0.051
 # lambda_actual = 0.275   # lambda_RPM = 2.495
@@ -605,20 +611,13 @@ for rank in choice_param_dictionary.keys():
 #
 # choice_param_dictionary = generate_synthetic_data()
 # print_auditing_calcs(choice_param_dictionary, t_kappa=0.034, t_lambda=0.275, t_omega=0.661)
+# print('Synthetic data dummary: %d total situations, %d play, %d fold' % (sum([len(y) for x in choice_param_dictionary.values() for y in x.values()]),
+#                                                                          sum([z['n_chosen']['play'] for x in choice_param_dictionary.values() for y in x.values() for z in y]),
+#                                                                          sum([z['n_chosen']['fold'] for x in choice_param_dictionary.values() for y in x.values() for z in y])))
 
 # ====== Run model fitting =======
 # --- create model object
 model = RandomUtilityModel(choice_param_dictionary)
-
-#######
-# ---- debugging / auditing, can delete
-# t_sum = list()
-# for rank in model.data_f.keys():
-#     for seat in model.data_f[rank].keys():
-#         t_sum.append(sum(model.data_f[rank][seat]['n_chosen'].values()))
-# print('Total observations in choice_param_dictionary: %d' % sum(t_sum))
-# del t_sum
-######
 
 # --- fit one model
 model.negLL_RUM([.034, 0.275, 0.661])
