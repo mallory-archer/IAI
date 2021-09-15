@@ -209,12 +209,13 @@ def create_payoff_dict(df_f, fp_output_f, fn_output_f, save_TF=False):
 
     return payoff_dict_f
 
+print('hello world')
 
 # =========== DEFINE PARAMETERS ===========
 fp_output = 'output'
 fn_output_prob = 'prob_dict_dnn.json'
 fn_output_payoff = 'payoff_dict_dnn.json'
-save_dict_TF = True
+save_dict_TF = False
 
 # --- features
 target_name = 'win_TF'
@@ -292,6 +293,17 @@ plt.title("Training error")
 # --- get estimations of payoffs ---
 # separate into losses and wins
 # get avg amount won/lost
+plt.figure()
+plt.plot(df_model.slansky, df_model.outcome, 'x')
+for i in df_model.slansky.unique():
+    plt.plot(i, df_model.loc[df_model.slansky == i].outcome.mean(), 'r.')
+    plt.plot(i, df_model.loc[df_model.slansky == i].outcome.median(), 'g.')
+plt.ylim([-500, 500])
+plt.title('Model estimation data by Slanksy rank')
+plt.xlabel('Slansky rank')
+plt.ylabel('Group outcome')
+plt.legend(['mean', 'median'])
+
 avg_win = df_model.loc[df_model.outcome > 0, 'outcome'].mean()
 avg_loss = df_model.loc[df_model.outcome < 0, 'outcome'].mean()
 med_win = df_model.loc[df_model.outcome > 0, 'outcome'].median()
@@ -303,13 +315,31 @@ test_med_val = [x[0] * med_win + (1 - x[0]) * med_loss for x in test_pred]
 test_exp_val = [x[0] * avg_win + (1 - x[0]) * avg_loss for x in test_pred]
 
 plt.figure()
-plt.hist(test_exp_val)
-plt.hist(test_med_val)
-plt.title("Predicted expected values")
+plt.hist(test_pred)
+# plt.hist(test_exp_val)
+# plt.hist(test_med_val)
+plt.title("Predicted probabilities of winning for test set\nmean=%3.2f%%, median=%3.2f%%" % (test_pred.mean()*100, np.median(test_pred)*100))
 
+# plot actual v predicted prob
 plt.figure()
-plt.scatter(df_model.loc[test.index].outcome, test_exp_val)
-plt.title('Actual outcomes vs. predicted outcomes via expected value')
+plt.scatter(test_pred, [x + np.random.normal(0, .1) for x in test[target_name]])
+plt.title("Actual outcomes vs. predicted probabilities")
+plt.xlabel('predicted')
+plt.ylabel('actual + noise for visual separation')
+plt.axvline(np.mean([test_pred[i][0] for i in range(len(test[target_name])) if test[target_name].iloc[i] == 1]), c='r')
+plt.axvline(np.mean([test_pred[i][0] for i in range(len(test[target_name])) if test[target_name].iloc[i] == 0]), c='g')
+plt.legend(['actual play average predictions, ' + str(round(np.mean([test_pred[i][0] for i in range(len(test[target_name])) if test[target_name].iloc[i] == 1]) * 100, 1)) + '%',
+            'actual fold average predictions ' + str(round(np.mean([test_pred[i][0] for i in range(len(test[target_name])) if test[target_name].iloc[i] == 0]) * 100, 1)) + '%'])
+
+_, axs = plt.subplots(2, 2)
+axs[0, 1].scatter(df_model.loc[test.index].outcome, test_exp_val)
+axs[0, 1].set_title('Actual outcomes vs. predicted outcomes')
+axs[0, 1].set_xlabel('Actual outcome')
+axs[0, 1].set_ylabel('Predicted E[outcome] using mean observed outcome')
+axs[0, 0].hist(test_exp_val)
+axs[0, 0].set_title('Histogram of predicted outcomes')
+axs[1, 1].hist(df_model.loc[test.index].outcome)
+axs[1, 1].set_title('Histogram of actual outcomes')
 
 # ========== RESULTS EXAMINATION
 # --- evaluate fit
@@ -333,26 +363,21 @@ print(confusion_matrix(test[target_name], test_pred > 0.5))
 print('--- Confusion matrix (row = actual, col = pred) at threshold ROC optimizer = %3.2f%% ---' % (thresh_optimizer * 100))
 print(confusion_matrix(test[target_name], test_pred > thresh_optimizer))
 
-# generate histogram of predicted probabilities
-plt.figure()
-plt.hist(test_pred)
-plt.title("Predicted probabilities of " + target_name)
-
-# plot actual v predicted prob
-plt.figure()
-plt.scatter(test_pred, [x + np.random.normal(0, .1) for x in test[target_name]])
-plt.title("Actual outcomes vs. predicted probabilities")
-plt.axvline(np.mean([test_pred[i][0] for i in range(len(test[target_name])) if test[target_name].iloc[i] == 1]), c='r')
-plt.axvline(np.mean([test_pred[i][0] for i in range(len(test[target_name])) if test[target_name].iloc[i] == 0]), c='g')
-plt.legend(['actual play average predictions', 'actual fold average predictions'])
-
 # ========== MAKE PROBABILITY PREDICTIONS FOR ENTIRE DATA SET ===============
 missing_val_sub_cols = {'opponents_string_fold_fill': 'opponents_string'}
-prob_pred_all = model.predict(df_to_dataset(df[[x for x in select_feature_names if x not in list(missing_val_sub_cols.values())] + list(missing_val_sub_cols.keys()) + [target_name]].rename(columns=missing_val_sub_cols),
+prob_pred_all = model.predict(df_to_dataset(df[[x for x in select_feature_names if x not in list(missing_val_sub_cols.values())] + [k for k, v in missing_val_sub_cols.items() if v in select_feature_names] + [target_name]].rename(columns=missing_val_sub_cols),
                                             target_name))
 df = pd.concat([df, pd.Series([x[0] for x in prob_pred_all], name='prob_winning')], axis=1)
 
 pred_dict = create_pred_dict(df, fp_output, fn_output_prob, save_TF=save_dict_TF)
+
+plt.figure()
+plt.hist(prob_pred_all)
+plt.title('Histogram of predicted probabilities, all data, n=' + str(len(prob_pred_all)))
+
+plt.figure()
+plt.hist(test_pred)
+plt.title('Histogram of predicted probabilities, test data, n=' + str(len(test_pred)))
 
 # ========== PAYOFFS ===============
 # if you fold preflop, whatever you lost in the outcome column is whatever you had in preflop
@@ -384,31 +409,82 @@ del df_preflop_pot_amount
 # plt.scatter(df.loc[df.preflop_play_TF & ~df.win_TF & ((df.seat != 1) | (df.seat != 2)), 'preflop_pot_stake'], df.loc[df.preflop_play_TF & ~df.win_TF & ((df.seat != 1) | (df.seat != 2)), 'outcome'])
 
 # --- Predict winnings -----
-model_win = OLS(endog=df.loc[df.win_TF, 'outcome'],
-                exog=df.loc[df.win_TF, ['preflop_pot_tot_amount', 'preflop_num_final_participants']])
+# --- scale
+t_filter_cond = df.win_TF
+t_df = df.loc[t_filter_cond & (df.outcome < 5000), ['outcome', 'preflop_pot_tot_amount', 'preflop_num_final_participants']]
+t_outcome_scaling_mean = t_df['outcome'].mean()
+t_outcome_scaling_stddev = t_df['outcome'].std()
+t_preflop_pot_scaling_mean = t_df['preflop_pot_tot_amount'].mean()
+t_preflop_pot_scaling_stddev = t_df['preflop_pot_tot_amount'].std()
+t_df['outcome_scaled'] = (t_df['outcome'] - t_outcome_scaling_mean) / t_outcome_scaling_stddev
+t_df['preflop_pot_tot_amount_scaled'] = (t_df['preflop_pot_tot_amount'] - t_preflop_pot_scaling_mean) / t_preflop_pot_scaling_stddev
+
+# --- fit model
+model_win = OLS(endog=t_df['outcome_scaled'],  ###########
+                exog=t_df[['preflop_pot_tot_amount_scaled', 'preflop_num_final_participants']])    ##########
 results_win = model_win.fit()
 print('\n--- Regression results for predicting win outcome------')
 print(results_win.summary())
+
+# ----- make predictions
+df['preflop_pot_tot_amount_scaled'] = (df['preflop_pot_tot_amount'] - t_preflop_pot_scaling_mean) / t_preflop_pot_scaling_stddev
+df['predicted_win_play_scaled'] = results_win.predict(df[['preflop_pot_tot_amount_scaled', 'preflop_num_final_participants']])
+df['predicted_win_play'] = df.predicted_win_play_scaled * t_outcome_scaling_stddev + t_outcome_scaling_mean
+
+df.drop(columns=['preflop_pot_tot_amount_scaled', 'predicted_win_play_scaled'], inplace=True)
+del t_df, t_outcome_scaling_mean, t_outcome_scaling_stddev, t_preflop_pot_scaling_mean, t_preflop_pot_scaling_stddev
+
+# --- Examine accuracy
+t_min = min(min(df.loc[t_filter_cond, 'outcome']), min(df.loc[t_filter_cond, 'predicted_win_play']))
+t_max = max(max(df.loc[t_filter_cond, 'outcome']), max(df.loc[t_filter_cond, 'predicted_win_play']))
 plt.figure()
-plt.scatter(df.loc[df.win_TF, 'outcome'], results_win.predict(df.loc[df.win_TF, ['preflop_pot_tot_amount', 'preflop_num_final_participants']]))
+plt.scatter(df.loc[t_filter_cond, 'outcome'], df.loc[t_filter_cond, 'predicted_win_play'])
+plt.plot(pd.Series([t_min, t_max]), pd.Series([t_min, t_max]), 'r-')
 plt.title('AVP of predicted WINNINGS given:\npreflop pot and number of post preflop players')
+plt.xlabel('actual outcomes (winning)')
+plt.ylabel('predicted outcomes (winning)')
+del t_min, t_max, t_filter_cond
 
 # --- Predict losses -----
-t_df = df.loc[df.preflop_play_TF & ~df.win_TF & ((df.seat != 1) | (df.seat != 2)), ['outcome', 'preflop_pot_stake']].dropna()
-model_lose = OLS(endog=t_df['outcome'],
-                 exog=t_df['preflop_pot_stake'])
+# --- scale
+t_filter_cond = df.preflop_play_TF & ~df.win_TF   # & ((df.seat != 1) | (df.seat != 2))
+t_df = df.loc[t_filter_cond & (df.outcome > -5000), ['outcome', 'preflop_pot_stake']].dropna()
+t_outcome_scaling_mean = t_df['outcome'].mean()
+t_outcome_scaling_stddev = t_df['outcome'].std()
+t_preflop_pot_scaling_mean = t_df['preflop_pot_stake'].mean()
+t_preflop_pot_scaling_stddev = t_df['preflop_pot_stake'].std()
+
+t_df['outcome_scaled'] = (t_df['outcome'] - t_outcome_scaling_mean) / t_outcome_scaling_stddev
+t_df['preflop_pot_stake_scaled'] = (df['preflop_pot_stake'] - t_preflop_pot_scaling_mean) / t_preflop_pot_scaling_stddev
+
+# --- fit model
+model_lose = OLS(endog=t_df['outcome_scaled'],
+                 exog=t_df['preflop_pot_stake_scaled'])
 results_lose = model_lose.fit()
-del t_df
+
 print('\n--- Regression results for predicting lose outcome------')
 print(results_lose.summary())
+
+# --- make predictions
+df['preflop_pot_stake_scaled'] = (df['preflop_pot_stake'] - t_preflop_pot_scaling_mean) / t_preflop_pot_scaling_stddev
+df['predicted_loss_play_scaled'] = results_lose.predict(df['preflop_pot_stake_scaled'])
+df['predicted_loss_play'] = df.predicted_loss_play_scaled * t_outcome_scaling_stddev + t_outcome_scaling_mean
+
+del t_df, t_outcome_scaling_mean, t_outcome_scaling_stddev, t_preflop_pot_scaling_mean, t_preflop_pot_scaling_stddev
+df.drop(columns=['preflop_pot_stake_scaled', 'predicted_loss_play_scaled'], inplace=True)
+
+# ---- examine results
+t_min = min(min(df.loc[t_filter_cond, 'outcome']), min(df.loc[t_filter_cond, 'predicted_loss_play']))
+t_max = max(max(df.loc[t_filter_cond, 'outcome']), max(df.loc[t_filter_cond, 'predicted_loss_play']))
 plt.figure()
-plt.scatter(df.loc[df.preflop_play_TF & ~df.win_TF, ['outcome']], results_lose.predict(df.loc[df.preflop_play_TF & ~df.win_TF, ['preflop_pot_stake']]))
+plt.scatter(df.loc[t_filter_cond, ['outcome']], df.loc[t_filter_cond, 'predicted_loss_play'])
+plt.plot(pd.Series([t_min, t_max]), pd.Series([t_min, t_max]), 'r-')
 plt.title('AVP of predicted LOSSES given:\npreflop pot and number of post preflop players')
+plt.xlabel('actual outcomes (losing)')
+plt.ylabel('predicted outcomes (losing)')
+del t_min, t_max, t_filter_cond
 
 # --- predict payoffs for play win/lose and fold (lose only) for all hands/players
-df['predicted_loss_play'] = results_lose.predict(df[['preflop_pot_stake']])
-df['predicted_win_play'] = results_win.predict(df[['preflop_pot_tot_amount', 'preflop_num_final_participants']])
-
 # if you choose not to play pre-flop, then whatever you lost in the outcome must have been what you put in before making the decision to fold
 # if you chose to play pre-flop, assume that you would have folded immediately and lost 0 if you weren't blind, or blind if you were in seat 1 or 2 #### this could be refined to calc exactly how much money a player had in the pot when making the decision to fold
 df['predicted_loss_fold'] = 0  # base assumption (if you played preflop and weren't seat 1 or 2, so we don't know if outcome is from preflop or later, assume you folded immediately
@@ -427,10 +503,10 @@ def calc_exp_value(prob_win_f, payoff_win_f, payoff_lose_f, payoff_fold_f):
 
 
 for ind, row in df.iterrows():
-    df.loc[ind, 'pred_exp_value'] = calc_exp_value(pred_dict[row.player][row.game][row.hand],
-                                                   payoff_dict[row.player][row.game][row.hand]['play']['win'],
-                                                   payoff_dict[row.player][row.game][row.hand]['play']['lose'],
-                                                   payoff_dict[row.player][row.game][row.hand]['fold']['lose'])
+    df.loc[ind, 'pred_exp_value'] = calc_exp_value(prob_win_f=pred_dict[row.player][row.game][row.hand],
+                                                   payoff_win_f=payoff_dict[row.player][row.game][row.hand]['play']['win'],
+                                                   payoff_lose_f=payoff_dict[row.player][row.game][row.hand]['play']['lose'],
+                                                   payoff_fold_f=payoff_dict[row.player][row.game][row.hand]['fold']['lose'])
 
 plt.figure()
 plt.scatter(df.outcome, df.pred_exp_value, c=df.preflop_play_TF)

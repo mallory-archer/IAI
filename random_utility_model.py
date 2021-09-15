@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 from assumption_calc_functions import calc_prob_winning_slansky_rank
 from assumption_calc_functions import create_game_hand_index
 
+pd.options.display.max_columns = 25
+
 # ----- File I/O params -----
 fp_output = 'output'
 fn_prob_payoff_dict = 'prob_payoff_dicts.json'
@@ -22,20 +24,21 @@ fn_payoff_dict = 'payoff_dict_dnn.json'
 
 # ---- Params -----
 # --- data selection params
-select_player = 'Bill'
-select_case = 'all' #'post_loss_excl_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
+select_player = 'Pluribus' # 'MrPink'  # Bill
+select_case = 'post_neutral_or_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
 fraction_of_data_to_use_for_estimation = 1
 save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
+save_path_param_estimates = os.path.join('output', 'iter_multistart_saves', select_player.lower(), 'est_params')
 
 # ---- multi start params
-num_multistarts = 1
-save_TF = False
-save_iter = 10000
-t_save_index_start = 150000
+num_multistarts = 50
+save_TF = True
+save_iter = 50
+t_save_index_start = 0
 
 # ----- Calcs -----
 if not save_TF:
-    save_iter = False   # pass the false condition on saving to multifactor function
+    save_iter = True   # pass the false condition on saving to multifactor function
 
 # ----- LOAD DATA -----
 # game data
@@ -95,23 +98,25 @@ class ChoiceSituation:
 
 
 class RandomUtilityModel:
-    def __init__(self, data_f):
+    def __init__(self, data_f, param_names_f=['kappa', 'lambda', 'omega']):
         self.data_f = data_f
         self.kappa_f = None
         self.lambda_f = None
         self.omega_f = None
-        self.param_names_f = ['kappa', 'lambda', 'omega']
+        self.param_names_f = param_names_f   # ['kappa', 'lambda', 'omega']  ###################
         self.init_params = None
         self.results = None
 
     def negLL_RUM(self, params):
         def calc_LLi(X, Y, I, util_X, util_Y, kappa, lam):
-            return (X + I / 2) * np.log(calc_RUM_prob(util_X, [util_X, util_Y], lam, kappa)) + \
+            return (X + I / 2) * np.log(calc_RUM_prob(util_i=util_X, util_j=[util_X, util_Y], lambda_f=lam, kappa_f=kappa)) + \
                    (Y + I / 2) * np.log(calc_RUM_prob(util_Y, [util_X, util_Y], lam, kappa))
 
-        self.kappa_f = params[self.param_names_f.index('kappa')]
-        self.lambda_f = params[self.param_names_f.index('lambda')]
-        self.omega_f = params[self.param_names_f.index('omega')]
+        for att in self.param_names_f:
+            setattr(self, att + '_f', params[self.param_names_f.index(att)])
+        # self.kappa_f = params[self.param_names_f.index('kappa')]
+        # self.lambda_f = params[self.param_names_f.index('lambda')]
+        # self.omega_f = params[self.param_names_f.index('omega')]
 
         LLi = list()
         t_total_obs = 0
@@ -196,9 +201,9 @@ def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
                         obs_avg_payoffs = obs_avg_payoffs + list(outcomes.values())
                     except KeyError:
                         print('Error for keys game %s and hand %s' % (game_num, hand_num))
-        plt.figure()
-        plt.hist(obs_avg_payoffs)
-        plt.title('Histogram of predicted payoffs for %s from payoff dictionary (unadjusted)' % player_ff.name)
+        # plt.figure()
+        # plt.hist(obs_avg_payoffs)
+        # plt.title('Histogram of predicted payoffs for %s from payoff dictionary (unadjusted)' % player_ff.name)
         return min(obs_avg_payoffs)
 
     choice_situations_f = list()
@@ -269,9 +274,9 @@ def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
                   cs.options[0].outcomes['lose']['prob'] * cs.options[0].outcomes['lose']['payoff'] +
                   cs.options[1].outcomes['lose']['prob'] * cs.options[1].outcomes['lose']['payoff']
                   for cs in choice_situations_f]
-    plt.figure()
-    plt.hist(t_exp_vals, bins=100)
-    plt.title('Choice situation prob/payoff expected values for %s' % player_f.name)
+    # plt.figure()
+    # plt.hist(t_exp_vals, bins=100)
+    # plt.title('Choice situation prob/payoff expected values for %s' % player_f.name)
 
     print('Dropped a total of %d for KeyErrors \n'
           '(likely b/c no observations for combination of slansky/seat/stack for prob and payoff estimates.) \n'
@@ -421,14 +426,22 @@ def calc_CRRA_utility(outcomes, omega):
 
 
 def calc_logit_prob(util_i, util_j, lambda_f):
-    return 1 / (sum([np.exp(lambda_f * (u - util_i)) for u in util_j]))
+    if lambda_f is None:
+        return 1 / (sum([np.exp(u - util_i) for u in util_j]))
+    else:
+        return 1 / (sum([np.exp(lambda_f * (u - util_i)) for u in util_j]))
 
 
 def calc_RUM_prob(util_i, util_j, lambda_f, kappa_f):
-    return (1 - 2 * kappa_f) * calc_logit_prob(util_i, util_j, lambda_f) + kappa_f
+    if kappa_f is None:
+        return calc_logit_prob(util_i=util_i, util_j=util_j, lambda_f=lambda_f)
+    else:
+        return (1 - 2 * kappa_f) * calc_logit_prob(util_i, util_j, lambda_f) + kappa_f    ##################
 
 
-def print_auditing_calcs(t_choice_param_dictionary, t_kappa, t_lambda, t_omega):
+def print_auditing_calcs(t_choice_param_dictionary, t_params):
+    for k, v in t_params.items():
+        print('Param %s: %s' % (k, v))
     for task in ['cs1', 'cs2', 'cs3', 'cs4']:
         for p in range(1, 11):
             print('TASK %s for p=%3.2f' % (task, p / 10))
@@ -436,12 +449,12 @@ def print_auditing_calcs(t_choice_param_dictionary, t_kappa, t_lambda, t_omega):
                     t_choice_param_dictionary[int(task.strip('cs'))][p][0]['n_chosen']['play'] +
                     t_choice_param_dictionary[int(task.strip('cs'))][p][0]['n_chosen']['fold'])))
             print('Probability RUM:     %3.2f' % calc_RUM_prob(
-                calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p][0]['params']['play'], t_omega),
-                [calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p][0]['params'][opt], t_omega) for
-                 opt in ['play', 'fold']], t_lambda, t_kappa))
+                calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p][0]['params']['play'], t_params['omega']),
+                [calc_CRRA_utility(t_choice_param_dictionary[int(task.strip('cs'))][p][0]['params'][opt], t_params['omega']) for
+                 opt in ['play', 'fold']], t_params['lambda'], t_params['kappa']))
             print('log-likelihood RUM: %3.2f' % - RandomUtilityModel(
                 {int(task.strip('cs')): {p: t_choice_param_dictionary[int(task.strip('cs'))][p]}}).negLL_RUM(
-                [t_kappa, t_lambda, t_omega]))  # / t_total_choices
+                [t_params['kappa'], t_params['lambda'], t_params['omega']]))  # / t_total_choices
             print('\n')
 
 
@@ -449,24 +462,29 @@ def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, sav
     initial_points = {'kappa': np.random.uniform(low=t_lb['kappa'], high=t_ub['kappa'], size=nstart_points),
                       'lambda': np.random.uniform(low=t_lb['lambda'], high=t_ub['lambda'], size=nstart_points),
                       'omega': np.random.uniform(low=t_lb['omega'], high=t_ub['omega'], size=nstart_points)}
-    [model_object.negLL_RUM([initial_points[model_object.param_names_f[0]][i], initial_points[model_object.param_names_f[1]][i],
-                     initial_points[model_object.param_names_f[2]][i]]) for i in range(len(initial_points['kappa']))]
+
+    # [model_object.negLL_RUM([initial_points[j][i] for j in model_object.param_names_f]) for i in range(nstart_points)]
+
+    # [model_object.negLL_RUM([initial_points[model_object.param_names_f[0]][i], initial_points[model_object.param_names_f[1]][i],
+    #                  initial_points[model_object.param_names_f[2]][i]]) for i in range(len(initial_points['kappa']))]
 
     results_list = list()
     for i in range(len(initial_points['kappa'])):
         if (i % 50) == 0:
             print('Optimizing for starting point %d' % i)
-        model_object.fit(init_params=[initial_points[model_object.param_names_f[0]][i],
-                                      initial_points[model_object.param_names_f[1]][i],
-                                      initial_points[model_object.param_names_f[2]][i]],
+        model_object.fit(init_params=[initial_points[j][i] for j in model_object.param_names_f], #[initial_points[model_object.param_names_f[0]][i],
+                                      # initial_points[model_object.param_names_f[1]][i],
+                                      # initial_points[model_object.param_names_f[2]][i]],
                          LL_form='RUM',
                          method='l-bfgs-b',
                          bounds=Bounds(lb=[t_lb[model_object.param_names_f[i]] for i in range(len(model_object.param_names_f))], ub=[t_ub[model_object.param_names_f[i]] for i in range(len(model_object.param_names_f))]),
                          options={'disp': False, 'maxiter': 500, 'ftol': 1e-10, 'gtol': 1e-5})   # tol=1e-8,
-        results_list.append({'initial_point': {model_object.param_names_f[0]: initial_points[model_object.param_names_f[0]][i],
-                                         model_object.param_names_f[1]: initial_points[model_object.param_names_f[1]][i],
-                                         model_object.param_names_f[2]: initial_points[model_object.param_names_f[2]][i]},
+        results_list.append({'initial_point': {j: initial_points[j][i] for j in model_object.param_names_f},
                              'results': copy.deepcopy(model_object.results)})
+
+        # {model_object.param_names_f[0]: initial_points[model_object.param_names_f[0]][i],
+        #         model_object.param_names_f[1]: initial_points[model_object.param_names_f[1]][i],
+        #         model_object.param_names_f[2]: initial_points[model_object.param_names_f[2]][i]},
 
         if save_iter is not False:
             if (((i + 1) % save_iter) == 0) and (i > 0):
@@ -492,7 +510,7 @@ def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, sav
     return results_list
 
 
-def parse_multistart(multistart_results, kappa_index, lambda_index, omega_index):
+def parse_multistart(multistart_results, param_locs_names_f, choice_param_dictionary_f):
     t_param_list_dicts = list()
     t_obs_list_dicts = list()
     for r in multistart_results:
@@ -509,43 +527,63 @@ def parse_multistart(multistart_results, kappa_index, lambda_index, omega_index)
             t_stderr = None
             t_tstat = None
 
-        t_param_list_dicts.append({'est_run_id': est_run_id,
-                                   'kappa': r['results'].x[kappa_index],
-                                   'lambda': r['results'].x[lambda_index],
-                                   'omega': r['results'].x[omega_index],
-                                   'message': r['results'].message,
-                                   'pos_def_hess': t_second_order_cond,
-                                   'kappa_initial': r['initial_point']['kappa'],
-                                   'lambda_initial': r['initial_point']['lambda'],
-                                   'omega_initial': r['initial_point']['omega'],
-                                   'kappa_stderr': t_stderr[kappa_index],
-                                   'lambda_stderr': t_stderr[lambda_index],
-                                   'omega_stderr': t_stderr[omega_index],
-                                   'kappa_tstat': t_tstat[kappa_index],
-                                   'lambda_tstat': t_tstat[lambda_index],
-                                   'omega_tstat': t_tstat[omega_index],
-                                   })
-        for rank in choice_param_dictionary.keys():
-            for seat in choice_param_dictionary[rank].keys():
-                t_util_play = calc_CRRA_utility(choice_param_dictionary[rank][seat]['params']['play'],
-                                                r['results'].x[omega_index])
-                t_util_fold = calc_CRRA_utility(choice_param_dictionary[rank][seat]['params']['fold'],
-                                                r['results'].x[omega_index])
-                t_obs_list_dicts.append(
-                    {'est_run_id': est_run_id,
-                     'rank': rank,
-                     'seat': seat,
-                     'actual_share': choice_param_dictionary[rank][seat]['n_chosen']['play'] / (
-                                 choice_param_dictionary[rank][seat]['n_chosen']['play'] +
-                                 choice_param_dictionary[rank][seat]['n_chosen']['fold']),
-                     'pred_share': calc_RUM_prob(t_util_play, [t_util_play, t_util_fold],
-                                                 r['results'].x[lambda_index],
-                                                 r['results'].x[kappa_index]),
-                     'util_play': t_util_play,
-                     'util_fold': t_util_fold,
-                     'conv_flag': r['results'].status
-                     }
-                )
+        try:
+            t_lambda = r['results'].x[param_locs_names_f['lambda']]
+        except KeyError:
+            t_lambda = None
+        try:
+            t_kappa = r['results'].x[param_locs_names_f['kappa']]
+        except:
+            t_kappa = None
+
+        # t_param_list_dicts.append({'est_run_id': est_run_id,
+        #                            'kappa': r['results'].x[kappa_index],
+        #                            'lambda': r['results'].x[lambda_index],
+        #                            'omega': r['results'].x[omega_index],
+        #                            'message': r['results'].message,
+        #                            'pos_def_hess': t_second_order_cond,
+        #                            'kappa_initial': r['initial_point']['kappa'],
+        #                            'lambda_initial': r['initial_point']['lambda'],
+        #                            'omega_initial': r['initial_point']['omega'],
+        #                            'kappa_stderr': t_stderr[kappa_index],
+        #                            'lambda_stderr': t_stderr[lambda_index],
+        #                            'omega_stderr': t_stderr[omega_index],
+        #                            'kappa_tstat': t_tstat[kappa_index],
+        #                            'lambda_tstat': t_tstat[lambda_index],
+        #                            'omega_tstat': t_tstat[omega_index],
+        #                            })
+
+        t_dict = {'est_run_id': est_run_id,
+         'message': r['results'].message,
+         'pos_def_hess': t_second_order_cond}
+        t_dict.update({k: r['results'].x[v] for k, v in param_locs_names_f.items()})
+        t_dict.update({k +'_initial': r['initial_point'][k] for k in param_locs_names_f.keys()})
+        t_dict.update({k + '_stderr': t_stderr[v] for k, v in param_locs_names_f.items()})
+        t_dict.update({k + '_tstat': t_tstat[v] for k, v in param_locs_names_f.items()})
+
+        t_param_list_dicts.append(t_dict)
+        del t_dict
+
+        for rank in choice_param_dictionary_f.keys():
+            for seat in choice_param_dictionary_f[rank].keys():
+                for item in choice_param_dictionary_f[rank][seat]:
+                    t_util_play = calc_CRRA_utility(item['params']['play'], r['results'].x[param_locs_names_f['omega']])
+                    t_util_fold = calc_CRRA_utility(item['params']['fold'], r['results'].x[param_locs_names_f['omega']])
+                    t_pred_share = calc_RUM_prob(t_util_play, [t_util_play, t_util_fold],
+                                                 t_lambda, t_kappa)
+                    t_obs_list_dicts.append(
+                        {'est_run_id': est_run_id,
+                         'rank': rank,
+                         'seat': seat,
+                         'actual_share': item['n_chosen']['play'],   # / (item['n_chosen']['play'] + item['n_chosen']['fold']),
+                         'pred_share': t_pred_share,
+                         'util_play': t_util_play,
+                         'util_fold': t_util_fold,
+                         'conv_flag': r['results'].status
+                         }
+                    )
+
+        del t_lambda, t_kappa
 
     return t_param_list_dicts, t_obs_list_dicts
 
@@ -610,26 +648,97 @@ del t_candidates
 # omega_actual = 0.661    # omega_RPM = 0.752
 #
 # choice_param_dictionary = generate_synthetic_data()
-# print_auditing_calcs(choice_param_dictionary, t_kappa=0.034, t_lambda=0.275, t_omega=0.661)
+# print_auditing_calcs(choice_param_dictionary, t_params={'kappa': None, 'lambda': None, 'omega': 0.661})    #######
 # print('Synthetic data dummary: %d total situations, %d play, %d fold' % (sum([len(y) for x in choice_param_dictionary.values() for y in x.values()]),
 #                                                                          sum([z['n_chosen']['play'] for x in choice_param_dictionary.values() for y in x.values() for z in y]),
 #                                                                          sum([z['n_chosen']['fold'] for x in choice_param_dictionary.values() for y in x.values() for z in y])))
 
 # ====== Run model fitting =======
 # --- create model object
-model = RandomUtilityModel(choice_param_dictionary)
+model = RandomUtilityModel(choice_param_dictionary, param_names_f=['omega', 'lambda'])
 
 # --- fit one model
 model.negLL_RUM([.034, 0.275, 0.661])
 model.negLL_RUM([.1, 2, 0.5])
 lb = {'kappa': 0.000, 'lambda': 0.0000, 'omega': 0.000}
-ub = {'kappa': .5, 'lambda': 3, 'omega': 2}
-model.fit(init_params=[0.05, .5, .5], LL_form='RUM',
+ub = {'kappa': 0.5, 'lambda': 3, 'omega': 3}
+# model.kappa_f = kappa_actual    ######
+model.fit(init_params=[0.5, 0.5], LL_form='RUM',
          method='l-bfgs-b',
          bounds=Bounds(lb=[lb[model.param_names_f[i]] for i in range(len(model.param_names_f))], ub=[ub[model.param_names_f[i]] for i in range(len(model.param_names_f))]),
          tol=1e-12,
-         options={'disp': True, 'maxiter': 500})    # bounds=Bounds(lb=[0.0001, 0.0001, 0], ub=[10, 10, 15]),
+         options={'disp': True, 'maxiter': 500})
 model.print()
+
+
+# ============== EXAMINING LIKELIHOOD, CAN DELETE ====================
+def check_likelihood(model_f, lb_f, ub_f):
+    # fixomega = 1.01    #model_f.results.x[0]
+    # fixlambda = model_f.results.x[1]
+    div_factor = 100
+    num_points = 20
+    # lambda_range = [l / div_factor for l in range(int(lb_f['lambda']*div_factor), int(ub_f['lambda']*div_factor), int(div_factor/num_points))] # [l / div_factor for l in range(0, 200, 10)]
+    lambda_range = [o / div_factor for o in range(int(lb_f['lambda'] * div_factor), int(ub_f['lambda'] * div_factor),
+                                                  int((int(ub_f['lambda']*div_factor) - int(lb_f['lambda']*div_factor)) / num_points))]
+    omega_range = [o / div_factor for o in range(int(lb_f['omega']*div_factor), int(ub_f['omega']*div_factor), int(int(ub_f['omega']*div_factor - int(lb_f['omega']*div_factor)) / num_points))]
+    kappa_range = [o / div_factor for o in range(int(lb_f['kappa']*div_factor), int(ub_f['kappa']*div_factor), int(div_factor/num_points))]
+
+    if 'kappa' in model_f.param_names_f:
+        # Examine kappa
+        test_LL_fixomega_lambda = list()
+        for fo in omega_range:
+            test_LL_fixomega_lambda.append([model_f.negLL_RUM([fo, 3, k]) for k in kappa_range])
+
+        plt.figure()
+        for s in test_LL_fixomega_lambda:
+            plt.plot(kappa_range, s)
+        plt.title('Negative LL holding omega fixed at various vals (lambda const)')  # estimate %3.2f' % fixomega)
+        plt.xlabel('Kappa')
+        plt.legend(['om=' + str(round(o, 2)) for o in omega_range])
+
+    if 'kappa' not in model_f.param_names_f:
+        # Examine lambda
+        test_LL_fixomega = list()
+        for fo in omega_range:
+            test_LL_fixomega.append([model_f.negLL_RUM([fo, l]) for l in lambda_range])
+
+        plt.figure()
+        for s in test_LL_fixomega:
+            plt.plot(lambda_range, s)
+        plt.title('Negative LL holding omega fixed at various vals')  # estimate %3.2f' % fixomega)
+        plt.xlabel('Lambda')
+        plt.legend(['om=' + str(round(o, 2)) for o in omega_range])
+
+        # Examine omega
+        test_LL_fixlambda = list()
+        for fl in lambda_range:
+            test_LL_fixlambda.append([model_f.negLL_RUM([o, fl]) for o in omega_range])
+
+        plt.figure()
+        for s in test_LL_fixlambda:
+            plt.plot(omega_range, s)
+        plt.title('Negative LL holding lambda fixed at various vals')  # estimate %3.2f' % fixlambda)
+        plt.xlabel('omega')
+        plt.legend(['lam=' + str(round(l, 2)) for l in lambda_range])
+
+        #############
+        # 2D
+        plt.figure()
+        xx, yy = np.mgrid[omega_range, lambda_range]
+
+        # Extract x and y
+        xx, yy = np.mgrid[min(omega_range):max(omega_range):100j, min(lambda_range):max(lambda_range):100j]
+        positions = np.vstack([xx.ravel(), yy.ravel()])
+        values = np.vstack([omega_range, lambda_range])
+        f = [model_f.negLL_RUM(positions[:, i]) for i in range(positions.shape[1])]
+        F = np.reshape(f(positions).T, xx.shape)
+
+        plt.contour(xx, yy, test_LL_fixlambda, cmap='coolwarm')
+        ####################
+    return None
+
+check_likelihood(model, lb, ub)
+# =============================================
 
 # --- run multistart
 # run and save
@@ -647,329 +756,177 @@ for fn in [f for f in os.listdir(save_path) if os.path.isfile(os.path.join(save_
 i = 0
 eps = 1e-4
 for r in select_results:
-    if (r['results'].x[0] > (lb['kappa'] + eps)) & (r['results'].x[0] < (ub['kappa'] - eps)) & \
-            (r['results'].x[1] > (lb['lambda'] + eps)) & (r['results'].x[1] < (ub['lambda'] - eps)) & \
-            (r['results'].x[2] > (lb['omega'] + eps)) & (r['results'].x[2] < (ub['omega'] - eps)) & \
+    if all([(r['results'].x[model.param_names_f.index(j)] > (lb[j] + eps)) & (r['results'].x[model.param_names_f.index(j)] < (ub[j] -eps)) for j in model.param_names_f]) & \
             all([x > 1.96 for x in calc_mle_tstat(r['results'].x, calc_robust_varcov(r['results'].jac, r['results'].hess_inv.todense()))['tstat']]):    # & \
-            # (r['results'].message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'):
+            # (r['results'].message == b'CONVERGENCE: NORM_OF_PROJECTED_RADIENT_<=_PGTOL'):
         print('%d %s' % (i, r['results'].x))
     i += 1
 #########
 
-list_dict_params, list_dict_obs = parse_multistart(select_results, kappa_index=model.param_names_f.index('kappa'), lambda_index=model.param_names_f.index('lambda'), omega_index=model.param_names_f.index('omega'))
+list_dict_params, list_dict_obs = parse_multistart(select_results, param_locs_names_f={k: model.param_names_f.index(k) for k in model.param_names_f}, choice_param_dictionary_f=choice_param_dictionary)
+# list_dict_params, list_dict_obs = parse_multistart(select_results, kappa_index=0, lambda_index=model.param_names_f.index('lambda'), omega_index=model.param_names_f.index('omega'), choice_param_dictionary_f=choice_param_dictionary)
+
+
+########### - CAN DELETE CHECKING RESULTS ################
+plt.figure()
+plt.hist([x['omega'] for x in list_dict_params])
+plt.title('omega')
+
+df_params = pd.DataFrame(list_dict_params).set_index('est_run_id')
+df_obs = pd.DataFrame(list_dict_obs)
+eps = 1e-2
+tstat_limit = 1.96
+df_opt_params = model.param_names_f
+
+t_filter = pd.Series(True, index=df_params.index)
+for n in df_opt_params:
+    print(n)
+    filter_bounds = (df_params[n] >= (lb[n] + eps)) & (df_params[n] <= (ub[n] - eps))
+    filter_tstat = (df_params[n + '_tstat'].abs() >= tstat_limit)
+    filter_initial = (df_params[n] >= (df_params[n + '_initial'] + eps)) | (df_params[n] <= (df_params[n + '_initial'] - eps))
+    t_filter = t_filter & filter_bounds & filter_initial & filter_tstat
+    print('After %s, %d obs remaining' % (n, sum(t_filter)))
+if 'lambda' in df_opt_params:
+    filter_lambda1 = (df_params['lambda'] > (1 + eps)) | (df_params['lambda'] < (1 - eps))
+else:
+    filter_lambda1 = pd.Series(True, index=df_params.index)
+if 'omega' in df_opt_params:
+    # filter_omega1 = (df_params['omega'] > (1 + eps)) | (df_params['omega'] < (1 - eps))
+    filter_omega1 = df_params['omega'] <= (1 - eps)
+
+filter_message = ((df_params.message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL') | (df_params.message == b'CONVERGENCE: REL_REDUCTION_OF_F_<=_FACTR*EPSMCH'))
+ind_filter = df_params.index[t_filter & filter_lambda1 & filter_omega1 & filter_message]  #
+print('Across all filters %d/%d observations remain' % (len(ind_filter), df_params.shape[0]))
+
+for n in df_opt_params:
+    plt.figure()
+    df_params.loc[ind_filter][n].hist()
+    plt.title('Histogram of ' + n + ' estimates')
+
+if 'lambda' in df_params.columns:
+    plt.figure()
+    plt.hist([np.log(x) for x in df_params.loc[ind_filter]['lambda']])
+    plt.title('Histogram of ln(lambda) estimates')
+
+df_obs_filtered = df_obs.loc[df_obs.est_run_id.isin(list(ind_filter))]
+plt.figure()
+# plt.scatter(df_obs_filtered['util_fold'], df_obs_filtered['util_play'], c=df_obs_filtered.actual_share)
+plt.scatter(df_obs_filtered.loc[df_obs_filtered.actual_share == 0, 'util_fold'],
+            df_obs_filtered.loc[df_obs_filtered.actual_share == 0, 'util_play'], c='r')
+plt.scatter(df_obs_filtered.loc[df_obs_filtered.actual_share == 1, 'util_fold'],
+            df_obs_filtered.loc[df_obs_filtered.actual_share == 1, 'util_play'], c='b')
+plt.legend(['actually folded', 'actually played'])
+plt.plot([min(min(df_obs_filtered['util_fold']), min(df_obs_filtered['util_play'])), max(max(df_obs_filtered['util_fold']), max(df_obs_filtered['util_play']))],
+         [min(min(df_obs_filtered['util_fold']), min(df_obs_filtered['util_play'])), max(max(df_obs_filtered['util_fold']), max(df_obs_filtered['util_play']))], '.-')
+plt.xlabel('Utility of folding at estimated parameters')
+plt.ylabel('Utility of playing at estimated parameters')
+
+plt.figure()
+plt.scatter(df_obs_filtered['pred_share'], df_obs_filtered['actual_share'])
+plt.xlabel('Predicted share')
+plt.ylabel('Choice')
+plt.title('Actual v. predicted shares')
+
+print('---- AFTER FILTERING FOR VALID CONVERGENCE-------')
+print('n obs = %d' % len(ind_filter))
+print('mean OMEGA = %3.2f' % df_params.loc[ind_filter]['omega'].mean())
+print('mean LAMBDA = %3.2f' % df_params.loc[ind_filter]['lambda'].mean())
+print('stdev OMEGA = %3.5f' % df_params.loc[ind_filter]['omega'].std())
+print('stdev LAMBDA = %3.5f' % df_params.loc[ind_filter]['lambda'].std())
+
+
+# df_obs_filtered['pred_exp_value'] = df_obs_filtered.pred
+exp_omega = df_params.loc[ind_filter]['omega'].mean()
+for rank in choice_param_dictionary.keys():
+    for seat in choice_param_dictionary[rank].keys():
+        for item in choice_param_dictionary[rank][seat]:
+            item.update({'exp_util_omega_' + str(int(round(exp_omega, 4)*10000)) + 'e4': {'play': calc_CRRA_utility(item['params']['play'], exp_omega),
+                                                                                          'fold': calc_CRRA_utility(item['params']['fold'], exp_omega)}})
+
+df_rational = pd.DataFrame(columns=['play_TF', 'fold_TF', 'exp_util_play', 'exp_util_fold'])
+for rank in choice_param_dictionary.keys():
+    for seat in choice_param_dictionary[rank].keys():
+        for item in choice_param_dictionary[rank][seat]:
+            t_key = [k for k in item.keys() if k.find('exp_util_omega_') > -1][0]
+            df_rational = df_rational.append(
+                pd.Series({'play_TF': bool(item['n_chosen']['play']),
+                           'fold_TF': bool(item['n_chosen']['fold']),
+                           'exp_util_play': item[t_key]['play'],
+                           'exp_util_fold': item[t_key]['fold']}),
+                ignore_index=True)
+            del t_key
+
+df_rational = df_rational.astype({'play_TF': bool, 'fold_TF': bool})
+df_rational['exp_util_play_greater_than_fold'] = (df_rational.exp_util_play > df_rational.exp_util_fold)
+df_rational['rational'] = (df_rational.exp_util_play_greater_than_fold & df_rational.play_TF) | ((~df_rational.exp_util_play_greater_than_fold) & (~df_rational.play_TF))
+
+
+print('--- Rational choice:')
+print('(Rational) Blended: %3.1f%% (n=%d):' % (df_rational.rational.sum() / df_rational.shape[0] * 100, df_rational.shape[0]))
+print('(Rational)   Play - positive expected value: %3.1f%% (n=%d)' % (sum(df_rational.exp_util_play_greater_than_fold & df_rational.play_TF)/sum(df_rational.exp_util_play_greater_than_fold) * 100, sum(df_rational.exp_util_play_greater_than_fold & df_rational.play_TF)))
+print('(Irrational) Fold - positive expected value: %3.1f%% (n=%d)' % (sum(df_rational.exp_util_play_greater_than_fold & ~df_rational.play_TF)/sum(df_rational.exp_util_play_greater_than_fold) * 100, sum(df_rational.exp_util_play_greater_than_fold & ~df_rational.play_TF)))
+print('(Irrational)   Play - negative expected value: %3.1f%% (n=%d)' % (sum(~df_rational.exp_util_play_greater_than_fold & df_rational.play_TF)/sum(~df_rational.exp_util_play_greater_than_fold) * 100, sum(~df_rational.exp_util_play_greater_than_fold & df_rational.play_TF)))
+print('(Rational) Fold - negative expected value: %3.1f%% (n=%d)' % (sum(~df_rational.exp_util_play_greater_than_fold & ~df_rational.play_TF)/sum(~df_rational.exp_util_play_greater_than_fold) * 100, sum(~df_rational.exp_util_play_greater_than_fold & ~df_rational.play_TF)))
+
+
+#################################
 
 # ====== SAVE TO CSV FOR TABLEAU EXAMINATION =======
 # select_case_hold = select_case  #####
 # select_case = select_case_hold + '_30perc_draw_test'    ######
-if save_TF:
-    pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player.lower() + '_multistart_params_' + select_case + '.csv'))
-    pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
+# if save_TF:
+#     pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player.lower() + '_multistart_params_' + select_case + '.csv'))
+#     pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
 
+# save estimated parameter output
+if save_TF:
+    with open(os.path.join(save_path_param_estimates, select_player.lower() +'_' + select_case + '.json'), 'w') as f:
+        t_dict = {p: {'mean': df_params.loc[ind_filter][p].mean(), 'stdev': df_params.loc[ind_filter][p].std(), 'nobs': float(df_params.loc[ind_filter][p].count())} for p in ['omega', 'lambda']}
+        t_dict.update({'proportion_rational': df_rational.rational.sum() / df_rational.shape[0], 'nobs_rational': df_rational.shape[0]})
+        json.dump(t_dict, fp=f)
+        del t_dict
+
+# ============== TEST OF DIFFERENCES ==============
+from assumption_calc_functions import two_sample_test_ind_means
+from assumption_calc_functions import two_sample_test_prop
 
 # two_sample_test_ind_means(mu1, mu2, s1, s2, n1, n2, n_sides)
-from assumption_calc_functions import two_sample_test_ind_means
-two_sample_test_ind_means(-2.285, -2.869, 0.3857, 0.4956, 257, 108, n_sides=2)    # pluribus neutral vs lost ln(omega) diff
-two_sample_test_ind_means(-2.626, -3.084, 0.8418, 1.048, 108, 257, n_sides=2)    # pluribus neutral vs lost ln(kappa) diff
-two_sample_test_ind_means(-2.573, -2.583, 0.2741, 0.7603, 340, 250, n_sides=2)    # bill neutral vs lost ln(omega) diff
-two_sample_test_ind_means(-3.022, -2.751, 0.8563, 1.058, 340, 250, n_sides=2)    # bill neutral vs lost ln(kappa) diff
+# two_sample_test_prop(p1_f, p2_f, n1_f, n2_f, n_sides_f)
 
+# specify players and cases
+players_for_testing = ['pluribus', 'mrpink']
+cases_for_testing = ['post_loss_excl_blind_only', 'post_neutral_or_blind_only'] # must only be a list of two currently
+params_for_testing = ['omega', 'lambda']
 
+# load relevant data
+results_dict = {p: {c: {} for c in cases_for_testing} for p in players_for_testing}
+for p in players_for_testing:
+    for c in cases_for_testing:
+        with open(os.path.join('output', 'iter_multistart_saves', p, 'est_params', p + '_' + c + '.json'), 'r') as f:
+            results_dict[p][c] = json.load(f)
 
-# ====== ANALYSIS RESULTS =====
-# from assumption_calc_functions import two_sample_test_ind_means
-#
-# eps_prop_bound = 0.2
-# stat_sig_thresh = 1.96
-# filters = {'kappa_lb': 1e-8, 'omega_lb': 1e-8, 'lambda_lb': 1e-8, 'kappa_ub': 0.4995, 'omega_at_1': eps_prop_bound,
-#            'kappa_at_initial': eps_prop_bound, 'omega_at_initial': eps_prop_bound, 'lambda_at_initial': eps_prop_bound,
-#            'omega_stat_sig': stat_sig_thresh, 'lambda_stat_sig': stat_sig_thresh}   # 'kappa_stat_sig': stat_sig_thresh,
-# test_param_name = 'kappa'
-#
-#
-# class Scenario:
-#     def __init__(self, player, case, filters=None):
-#         self.player = player
-#         self.case = case
-#         self.mean = {'filtered_data': {'kappa': None, 'omega': None, 'lambdap': None}, 'data': {'kappa': None, 'omega': None, 'lambdap': None}}
-#         self.sample_std = {'filtered_data': {'kappa': None, 'omega': None, 'lambdap': None}, 'data': {'kappa': None, 'omega': None, 'lambdap': None}}
-#         self.n_obs = {'filtered_data': {'kappa': None, 'omega': None, 'lambdap': None}, 'data': {'kappa': None, 'omega': None, 'lambdap': None}}
-#         self.data = None
-#         self.filters = filters
-#         self.filtered_data = None
-#
-#     def import_data(self):
-#         self.data = pd.read_csv(os.path.join('output', self.player.lower() + '_multistart_params_' + self.case + '.csv')).set_index('est_run_id')
-#         self.data.rename(columns={'lambda': 'lambdap'}, inplace=True)
-#
-#     def filter_data(self):
-#         if self.filters is None:
-#             print('Warning: no filter conditions provided in attribute. Filtered data is identical to original data.')
-#             self.filtered_data = self.data
-#         else:
-#             filter_master = pd.Series(data=[True] * len(self.data.index), index=self.data.index, dtype=bool)
-#             print('Total valid start obs: %d' % sum(filter_master))
-#             if 'kappa_lb' in list(self.filters.keys()):
-#                 # filter1 = (self.data.kappa > 1e-8)
-#                 filter_master = filter_master & (self.data.kappa > self.filters['kappa_lb'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'omega_lb' in list(self.filters.keys()):
-#                 # filter2 = (self.data.omega > 1e-8)
-#                 filter_master = filter_master & (self.data.omega > self.filters['omega_lb'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'lambda_lb' in list(self.filters.keys()):
-#                 # filter3 = (self.data.lambdap > 1e-8)
-#                 filter_master = filter_master & (self.data.lambdap > self.filters['lambda_lb'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'kappa_ub' in list(self.filters.keys()):
-#                 # filter4 = (self.data.kappa < 0.4995)
-#                 filter_master = filter_master & (self.data.kappa < self.filters['kappa_ub'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'omega_at_1' in list(self.filters.keys()):
-#                 # filter5 = ((self.data.omega < (1 / (1 - eps_prop_bound_f))) & (self.data.omega > (1 * (1 - eps_prop_bound_f))))
-#                 filter_master = filter_master & ~((self.data.omega < (1 / (1 - self.filters['omega_at_1']))) & (
-#                             self.data.omega > (1 * (1 - self.filters['omega_at_1']))))
-#                 # print('omega at 1 Total valid start obs: %d' % sum(filter_master))
-#             if 'kappa_at_initial' in list(self.filters.keys()):
-#                 # filter6 = ~((self.data.kappa < (self.data.kappa_initial / (1 - eps_prop_bound_f))) & (
-#                 #                 self.data.kappa > (self.data.kappa_initial * (1 - eps_prop_bound_f))))
-#                 filter_master = filter_master & ~(
-#                             (self.data.kappa < (self.data.kappa_initial / (1 - self.filters['kappa_at_initial']))) & (
-#                                 self.data.kappa > (self.data.kappa_initial * (1 - self.filters['kappa_at_initial']))))
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'omega_at_initial' in list(self.filters.keys()):
-#                 # filter7 = ~((self.data.omega < (self.data.omega_initial / (1 - eps_prop_bound_f))) & (
-#                 #                 self.data.omega > (self.data.omega_initial * (1 - eps_prop_bound_f))))
-#                 filter_master = filter_master & ~(
-#                             (self.data.omega < (self.data.omega_initial / (1 - self.filters['omega_at_initial']))) & (
-#                                 self.data.omega > (self.data.omega_initial * (1 - self.filters['omega_at_initial']))))
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'lambda_at_initial' in list(self.filters.keys()):
-#                 # filter8 = ~((self.data.lambdap < (self.data.lambda_initial / (1 - eps_prop_bound_f))) & (
-#                 #                 self.data.lambdap > (self.data.lambda_initial * (1 - eps_prop_bound_f))))
-#                 filter_master = filter_master & ~(
-#                             (self.data.lambdap < (self.data.lambda_initial / (1 - self.filters['lambda_at_initial']))) & (
-#                                 self.data.lambdap > (self.data.lambda_initial * (1 - self.filters['lambda_at_initial']))))
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'kappa_stat_sig' in list(self.filters.keys()):
-#                 #  filter9 = self.data.kappa_tstat > 0
-#                 filter_master = filter_master & (self.data.kappa_tstat > self.filters['kappa_stat_sig'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'omega_stat_sig' in list(self.filters.keys()):
-#                 #  filter10 = self.data.omega_tstat > 1.96
-#                 filter_master = filter_master & (self.data.omega_tstat > self.filters['omega_stat_sig'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#             if 'lambda_stat_sig' in list(self.filters.keys()):
-#                 #  filter11 = self.data.lambda_tstat > 1.96
-#                 filter_master = filter_master & (self.data.lambda_tstat > self.filters['lambda_stat_sig'])
-#                 # print('Total valid start obs: %d' % sum(filter_master))
-#
-#             self.filtered_data = self.data[filter_master]
-#
-#     def calc_data_set_sum_stats(self, data_set='data'):
-#         for dset in ['data', 'filtered_data']:
-#             for par in ['kappa', 'omega', 'lambdap']:
-#                 self.mean[dset][par] = self.__getattribute__(dset)[par].mean()
-#                 self.sample_std[dset][par] = self.__getattribute__(dset)[par].std()
-#                 self.n_obs[dset][par] = self.__getattribute__(dset)[par].shape[0]
-#
-#
-# def run_test(test_info_f, test_param_name_f, filtered_type_f, scenarios_f):
-#     t_scen1_f = scenarios_f[test_info_f['scenario1']['player']][test_info_f['scenario1']['case']]
-#     t_scen2_f = scenarios_f[test_info_f['scenario2']['player']][test_info_f['scenario2']['case']]
-#
-#     t_tstat_f, t_pval_f = two_sample_test_ind_means(mu1=t_scen1_f.mean[filtered_type_f][test_param_name_f],
-#                                                     mu2=t_scen2_f.mean[filtered_type_f][test_param_name_f],
-#                                                     s1=t_scen1_f.sample_std[filtered_type_f][test_param_name_f],
-#                                                     s2=t_scen2_f.sample_std[filtered_type_f][test_param_name_f],
-#                                                     n1=t_scen1_f.n_obs[filtered_type_f][test_param_name_f],
-#                                                     n2=t_scen2_f.n_obs[filtered_type_f][test_param_name_f],
-#                                                     n_sides=2)
-#
-#     print('\nFor param %s:\n(player %s, case %s, mean = %3.4f, stdev = %3.4f, n_obs=%d) vs\n(player %s, case %s, mean = %3.4f, stdev = %3.4f, n_obs=%d):\ntwo-sided diff of means pval = %3.4f' % (
-#         test_param_name_f,
-#         test_info_f['scenario1']['player'],
-#         test_info_f['scenario1']['case'],
-#         t_scen1_f.mean[filtered_type_f][test_param_name_f],
-#         t_scen1_f.sample_std[filtered_type_f][test_param_name_f],
-#         t_scen1_f.n_obs[filtered_type_f][test_param_name_f],
-#         test_info_f['scenario2']['player'],
-#         test_info_f['scenario2']['case'],
-#         t_scen2_f.mean[filtered_type_f][test_param_name_f],
-#         t_scen2_f.sample_std[filtered_type_f][test_param_name_f],
-#         t_scen2_f.n_obs[filtered_type_f][test_param_name_f],
-#         t_pval_f))
-#
-#     return t_tstat_f, t_pval_f
-#
-#
-# tests = [{'scenario1': {'player': 'bill', 'case': 'post_neutral_or_blind_only'}, 'scenario2': {'player': 'bill', 'case': 'post_loss_excl_blind_only'}},
-#          {'scenario1': {'player': 'pluribus', 'case': 'post_neutral_or_blind_only'}, 'scenario2': {'player': 'pluribus', 'case': 'post_loss_excl_blind_only'}}]
-# unique_sets = list()
-# for t in tests:
-#     for s in t.values():
-#         unique_sets.append((s['player'], s['case']))
-#
-# scenarios = dict()
-# for us in set(unique_sets):
-#     t_scen = Scenario(us[0], us[1], filters)
-#     t_scen.import_data()
-#     t_scen.filter_data()
-#     t_scen.calc_data_set_sum_stats()
-#     try:
-#         scenarios[us[0]][us[1]] = t_scen
-#     except KeyError:
-#         scenarios.update({us[0]: {us[1]: t_scen}})
-#     del t_scen
-#
-# for t in tests:
-#     tstat, pval = run_test(t, test_param_name, 'filtered_data', scenarios)
+# compare parameter estimates by case
+print('\n\n===== change in RISK =====')
+print('For two sample test of independent means (expected value of estimated parameters)')
+print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
+for p in players_for_testing:
+    print('\tFor player %s:' % p)
+    for param in params_for_testing:
+        print('\t\tParameter: %s' % param)
+        print('\t\t\tCase 1: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[0], results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[0]][param]['nobs']))
+        print('\t\t\tCase 2: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[1], results_dict[p][cases_for_testing[1]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['nobs']))
+        print('\t\tt-stat: %3.2f, p-value: %3.1f' % (two_sample_test_ind_means(results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['mean'],
+                                                                                 results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['stdev'],
+                                                                                 results_dict[p][cases_for_testing[0]][param]['nobs'], results_dict[p][cases_for_testing[1]][param]['nobs'], n_sides=2)))
 
-
-
-#################
-
-# ---------- ARCHIVE -------
-# data frame for sanity checking / working
-# df_choices = pd.DataFrame(columns=['slansky', 'seat', 'choice', 'post_loss'])
-# for cs in choice_situations:
-#     df_choices = df_choices.append(dict(zip(['slansky', 'seat', 'choice', 'post_loss'], [cs.slansky_strength, cs.seat, cs.choice, cs.post_loss])), ignore_index=True)
-
-
-# def calc_CRRA_vutil(outcomes, omega):
-#     def calc_outcome_util(payoff, omega):
-#         if payoff == 0:
-#             return 0
-#         else:
-#             if omega == 1:
-#                 # derivative of CRRA utility undefined at omega = 1
-#                 return None
-#             else:
-#                 return ((payoff ** (1 - omega)) * (1 - ((1 - omega) * np.log(payoff)))) / ((1 - omega) ** 2)
-#     try:
-#         return sum([o['prob'] * calc_outcome_util(payoff=o['payoff'], omega=omega) for o in outcomes])
-#     except TypeError:
-#         return None
-
-
-# calc_CRRA_utility_omegaxy([{'payoff': 1, 'prob': 0.9}, {'payoff': 60, 'prob': 0.1}], [{'payoff': 5, 'prob': 1}])  #####
-# def calc_CRRA_utility_omegaxy(gamble1, gamble2, init_guess=0.5):
-#     # formatted function for root finding
-#     try:
-#         # return float(newton_krylov(lambda x: calc_CRRA_vutil(outcomes=gamble1, omega=x) - calc_CRRA_vutil(outcomes=gamble2, omega=x),
-#         #                            xin=init_guess))
-#         return float(newton_krylov(lambda x: calc_CRRA_utility(outcomes=gamble1, omega=x) -
-#                                        calc_CRRA_utility(outcomes=gamble2, omega=x),
-#                                    xin=init_guess))
-#     except:
-#         print('Could not find omega such that Ux = Uy')
-#         return None
-
-
-# test_for_ordered_gamble_type(list(cs_opt_spec[task]['opt1'].outcomes.values()),
-#                              list(cs_opt_spec[task]['opt2'].outcomes.values()))['type'] #####
-# gamble1 = list(cs_opt_spec[task]['opt1'].outcomes.values())
-# gamble2 = list(cs_opt_spec[task]['opt2'].outcomes.values())
-# def test_for_ordered_gamble_type(gamble1, gamble2, plot_ordered_gambles_TF=False):
-#     ### switched this test to be on the derivatives but finding omegaxy matches up on using utility
-#     # uplay_greater_ufold = [calc_CRRA_utility(outcomes=gamble1, omega=w / 100) > calc_CRRA_utility(outcomes=gamble2, omega=w / 100) for w in range(0, 1000)]
-#     vplay_greater_vfold = [calc_CRRA_vutil(outcomes=gamble1, omega=w / 100) > calc_CRRA_vutil(outcomes=gamble2, omega=w / 100) for w in
-#                            range(0, 1000) if w/100 != 1]
-#     num_cross_points = sum([vplay_greater_vfold[i + 1] != vplay_greater_vfold[i] for i in range(len(vplay_greater_vfold) - 1)])
-#     loc_cross_points = [[w / 100 for w in range(0, 1000)][i] for i in range(len(vplay_greater_vfold) - 1) if
-#                         vplay_greater_vfold[i + 1] != vplay_greater_vfold[i]]
-#
-#     # plot ordered gamble utilities
-#     if plot_ordered_gambles_TF:
-#         if (sum(vplay_greater_vfold) != 0) and (sum(vplay_greater_vfold) != len(vplay_greater_vfold)):
-#             plt.figure()
-#             plt.plot([w / 100 for w in range(0, 1000)],
-#                      [calc_CRRA_utility(outcomes=gamble1,
-#                                         omega=w / 100) for w in range(0, 1000)])
-#             plt.plot([w / 100 for w in range(0, 1000)],
-#                      [calc_CRRA_utility(outcomes=gamble2,
-#                                         omega=w / 100) for w in range(0, 1000)])
-#             plt.title(
-#                 'num. cross points: %d at w=%s' % (num_cross_points, loc_cross_points))
-#             plt.show()
-#
-#     if num_cross_points >= 1:
-#         omegaxy = [calc_CRRA_utility_omegaxy(gamble1, gamble2, init_guess=loc_cross_points[i]) for i in
-#                    range(len(loc_cross_points))]
-#         omegaxy = [x for x in omegaxy if x is not None]
-#         omegaxy = list(set([round(x * 10000, 0)/10000 for x in omegaxy])) # get unique points to the level of the 3rd decimal place of precision
-#         if len(omegaxy) >= 1:
-#             Uxy = [(calc_CRRA_utility(outcomes=gamble1, omega=w), calc_CRRA_utility(outcomes=gamble2, omega=w)) for w in omegaxy]
-#             Vxy = [(calc_CRRA_vutil(outcomes=gamble1, omega=w), calc_CRRA_vutil(outcomes=gamble2, omega=w)) for w in omegaxy]
-#             num_cross_points = len(omegaxy)
-#             if num_cross_points == 1:
-#                 gamble_type = 'ordered'
-#             else:
-#                 gamble_type = 'multiple_intersections'
-#         else:
-#             gamble_type = 'unknown_intersections'
-#             num_cross_points = None
-#             omegaxy = None
-#             Uxy = None
-#             Vxy = None
-#     elif num_cross_points == 0:
-#         gamble_type = 'dominant'
-#         omegaxy = None
-#         Uxy = None
-#         Vxy = None
-#     else:
-#         return "error in test_for_ordered_gamble_type function"
-#
-#     return {'type': gamble_type, 'cross points': omegaxy, 'utility_cross': Uxy, 'utility_deriv_cross': Vxy}
-#
-#     # if num_cross_points == 1:
-#     #     return {'type': "ordered", 'cross points': omegaxy, 'utility_cross': Uxy, 'utility_deriv_cross': Vxy}
-#     # elif num_cross_points == 0:
-#     #     return {'type': "dominant", 'cross points': omegaxy, 'utility_cross': Uxy, 'utility_deriv_cross': Vxy}
-#     # elif num_cross_points > 1:
-#     #     return {'type': "multiple intersections", 'cross points': omegaxy, 'utility_cross': Uxy, 'utility_deriv_cross': Vxy}
-#     # elif num_cross_points == 'unknown':
-#     #     return {'type': "unknown intersections", 'cross points': omegaxy, 'utility_cross': Uxy, 'utility_deriv_cross': Vxy}
-#     # else:
-#     #     return "error in test_for_ordered_gamble_type function"
-
-# def calc_RPM_prob(riskier_TF, omegaxy, omega, kappa, lam, CRRA_order_type):
-#     print('WARNING: Needs to be audited. Could not match Apesteguia 2018'
-#           'Appendix for all values of p=0.1-0.9 and tasks 1 -4')
-#     if CRRA_order_type == 'ordered':
-#         if riskier_TF:
-#             return calc_RUM_prob(omegaxy, [omegaxy, omega], lam, kappa)
-#         else:
-#             return calc_RUM_prob(omega, [omegaxy, omega], lam, kappa)
-#     elif CRRA_order_type == 'dominant':
-#         if riskier_TF:
-#             return 1 - kappa
-#         else:
-#             return kappa
-#     else:
-#         print('Error calculating calc_RPM_prob: CRRA_order_type is not one of allowable types')
-#         return None
-
-
-# from matplotlib import cm
-# from matplotlib import pyplot as plt
-# for omega in [(x + 1)/10 for x in range(1, 15)]:
-#     fig, ax = plt.subplots(subplot_kw={'projection': '3d'})
-#     # fig, ax = plt.subplots(1, 1)
-#     X = np.arange(0, 1, 0.01)
-#     Y = np.arange(0, 100, 1)
-#     X, Y = np.meshgrid(X, Y)
-#     Z = copy.deepcopy(X)
-#     for i in range(X.shape[0]):
-#         for j in range(X.shape[1]):
-#             Z[i, j] = test.negLL_RUM([X[i, j], Y[i, j], omega])
-#     Z[np.isnan(Z)] = 0
-#     surf = ax.plot_surface(X, Y, Z, cmap=cm.coolwarm, linewidth=0, antialiased=False)
-#     # plt.imshow(Z, cmap=cm.coolwarm)
-#     plt.title('omega = %3.2f' % omega)
-
-# for omega in [(x + 1)/10 for x in range(8, 15)]:
-#     fig = plt.figure()
-#     plt.plot([x / 100 for x in range(100)],
-#              [test.negLL_RUM([kappa, lambda_actual, omega]) for kappa in [x / 100 for x in range(100)]])
-#     plt.title('omega=%3.2f, lambda=%3.2f' % (omega, lambda_actual))
-#     plt.xlabel('kappa')
+# compare proportion of rational decisions by case
+print('\n\n===== change in RATIONALITY ======')
+print('For two sample test of proportions (change in proportion of rational actions)')
+print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
+for p in players_for_testing:
+    print('\tFor player %s:' % p)
+    print('\t\tCase 1: %s, proportion = %3.2f, n = %d' % (cases_for_testing[0], results_dict[p][cases_for_testing[0]]['proportion_rational'], results_dict[p][cases_for_testing[0]]['nobs_rational']))
+    print('\t\tCase 2: %s, proportion = %3.2f, n = %d' % (cases_for_testing[1], results_dict[p][cases_for_testing[1]]['proportion_rational'], results_dict[p][cases_for_testing[1]]['nobs_rational']))
+    print('\tt-stat: %3.2f, p-value: %3.1f' % (two_sample_test_prop(results_dict[p][cases_for_testing[0]]['proportion_rational'], results_dict[p][cases_for_testing[1]]['proportion_rational'],
+                                                 results_dict[p][cases_for_testing[0]]['nobs_rational'], results_dict[p][cases_for_testing[1]]['nobs_rational'],
+                                                 n_sides_f=2)))
