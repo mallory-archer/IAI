@@ -209,12 +209,32 @@ def create_payoff_dict(df_f, fp_output_f, fn_output_f, save_TF=False):
 
     return payoff_dict_f
 
+
+def create_alt_pred_dict(fp_output, fn_output_prob1, fn_output_prob2, save_TF=False):
+    pred_dict_perfect = copy.deepcopy(pred_dict)
+    pred_dict_perfect_noise = copy.deepcopy(pred_dict)
+    for p in pred_dict.keys():
+        for game_num, hands in pred_dict[p].items():
+            for hand_num, probs in hands.items():
+                pred_dict_perfect[p][game_num][hand_num] = int((df.loc[(df.player == p) & (df.game == int(game_num)) & (df.hand == int(hand_num)), 'outcome'] > 0).values[0])
+                pred_dict_perfect_noise[p][game_num][hand_num] = abs(int((df.loc[
+                                                                    (df.player == p) & (df.game == int(game_num)) & (
+                                                                                df.hand == int(
+                                                                            hand_num)), 'outcome'] > 0).values[0]) - .05)
+    if save_TF:
+        with open(os.path.join(fp_output, fn_output_prob1), 'w') as f:
+            json.dump(pred_dict_perfect, fp=f)
+        with open(os.path.join(fp_output, fn_output_prob2), 'w') as f:
+            json.dump(pred_dict_perfect_noise, fp=f)
+
 print('hello world')
 
 # =========== DEFINE PARAMETERS ===========
 fp_output = 'output'
 fn_output_prob = 'prob_dict_dnn.json'
 fn_output_payoff = 'payoff_dict_dnn.json'
+fn_output_prob1 = 'pred_dict_perfect.json'
+fn_output_prob2 = 'pred_dict_perfect_noise.json'
 save_dict_TF = False
 
 # --- features
@@ -370,6 +390,8 @@ prob_pred_all = model.predict(df_to_dataset(df[[x for x in select_feature_names 
 df = pd.concat([df, pd.Series([x[0] for x in prob_pred_all], name='prob_winning')], axis=1)
 
 pred_dict = create_pred_dict(df, fp_output, fn_output_prob, save_TF=save_dict_TF)
+
+# create_alt_pred_dict(fp_output, fn_output_prob1, fn_output_prob2, save_TF=save_dict_TF)   # creates alternative dictionaries were probabilitie exactly match (0/1) or noisy match (0.05 / 0.95) the actual outcome
 
 plt.figure()
 plt.hist(prob_pred_all)

@@ -4,7 +4,7 @@ import json
 import copy
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize, Bounds
+from scipy.optimize import minimize, Bounds, fsolve
 import binascii
 import random
 import math
@@ -13,28 +13,38 @@ import matplotlib.pyplot as plt
 
 from assumption_calc_functions import calc_prob_winning_slansky_rank
 from assumption_calc_functions import create_game_hand_index
+from classify_gambles import identify_omega_range
+from classify_gambles import classify_gamble_types
 
 pd.options.display.max_columns = 25
 
+##### take out "perfect_prob"
+
 # ----- File I/O params -----
 fp_output = 'output'
-fn_prob_payoff_dict = 'prob_payoff_dicts.json'
-fn_prob_dict = 'prob_dict_dnn.json'
+fp_choice_situations = os.path.join('choice_situations')
 fn_payoff_dict = 'payoff_dict_dnn.json'
 
 # ---- Params -----
 # --- data selection params
-select_player = 'Pluribus' # 'MrPink'  # Bill
-select_case = 'post_neutral_or_blind_only'    # post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
-fraction_of_data_to_use_for_estimation = 1
-save_path = os.path.join('output', 'iter_multistart_saves', select_player.lower(), select_case)
-save_path_param_estimates = os.path.join('output', 'iter_multistart_saves', select_player.lower(), 'est_params')
+select_prob_source = 'dnn_prob'   # [perfect_prob, perfect_prob_noise, 'dnn_prob', 'perfect_prob_8020', 'perfect_prob5149']
+select_player_list = ['Pluribus']   # ['Eddie', 'MrOrange', 'Joe', 'MrBlonde', 'Gogo', 'Bill', 'MrPink', 'ORen', 'MrBlue', 'Budd', 'MrBrown', 'MrWhite', 'Hattori']   #, 'MrPink']  'Eddie', 'MrOrange', 'Joe', 'MrBlonde', 'Gogo', 'Bill', 'MrPink', 'ORen', 'MrBlue', 'Budd', 'MrBrown', 'Pluribus', 'MrWhite', 'Hattori'
+select_case = 'post_neutral_or_blind_only'    # 'post_neutral_or_blind_only'  #'post_loss' #'post_loss_excl_blind_only'  # options: post_loss, post_win, post_loss_excl_blind_only, post_win_excl_blind_only, post_neutral, post_neutral_or_blind_only
+select_gamble_types = ['prob_risk_decreases_omega_increases']
+fraction_of_data_to_use_for_estimation = 0.8
+
+# ---- pre-calcs ------
+fn_prob_dict = {'dnn_prob': 'prob_dict_dnn.json', 'perfect_prob': 'pred_dict_perfect.json', 'perfect_prob_noise': 'pred_dict_perfect_noise.json', 'perfect_prob_8020': 'pred_dict_8020.json', 'perfect_prob_5149': 'pred_dict_5149.json'}[select_prob_source]
+select_player_list_save_string = '_'.join(select_player_list).lower()
+choice_situations_dir_save_string = os.path.join(fp_output, fp_choice_situations, select_prob_source)
+multi_start_dir_save_string = os.path.join('output', 'iter_multistart_saves', select_player_list_save_string, select_prob_source, select_case)
+param_estimates_dir_save_string = os.path.join('output', 'iter_multistart_saves', select_player_list_save_string, select_prob_source, 'est_params')
 
 # ---- multi start params
-num_multistarts = 50
+num_multistarts = 1000
 save_TF = True
-save_iter = 50
-t_save_index_start = 0
+save_iter = 100
+t_save_index_start = 200
 
 # ----- Calcs -----
 if not save_TF:
@@ -47,16 +57,7 @@ with open("python_hand_data.pickle", 'rb') as f:
 players = data['players']
 games = data['games']
 
-# probability and payoffs by seat and slansky rank
-# with open(os.path.join(fp_output, fn_output), 'rb') as f:
-#     pred_dict = json.load(f)
-
 try:
-    # with open(os.path.join(fp_output, fn_prob_payoff_dict), 'r') as f:
-    #     t_dict = json.load(f)
-    #     prob_dict = t_dict['prob_dict']
-    #     payoff_dict = t_dict['payoff_dict']
-    #     del t_dict
     with open(os.path.join(fp_output, fn_prob_dict), 'r') as f:
         prob_dict = json.load(f)
     with open(os.path.join(fp_output, fn_payoff_dict), 'r') as f:
@@ -65,11 +66,6 @@ except FileNotFoundError:
     print('No probability and payoff dictionaries saved down in output folder')
     prob_dict, payoff_dict = calc_prob_winning_slansky_rank(games, slansky_groups_f=None, seat_groups_f=None, stack_groups_f=None)
 
-# ---- Calculations -----
-select_player_index = [i for i in range(0, len(players)) if players[i].name == select_player][0]
-game_hand_player_index = create_game_hand_index(players[select_player_index])
-
-
 class Option:
     def __init__(self, name, outcomes):
         self.name = name
@@ -77,7 +73,7 @@ class Option:
 
 
 class ChoiceSituation:
-    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, seat=None, post_loss=None, post_win=None, post_neutral=None, post_loss_excl_blind_only=None, post_win_excl_blind_only=None, post_neutral_or_blind_only=None, CRRA_ordered_gamble_type=None):
+    def __init__(self, sit_options, sit_choice=None, slansky_strength=None, stack_rank=None, seat=None, post_loss=None, post_win=None, post_neutral=None, post_loss_excl_blind_only=None, post_win_excl_blind_only=None, post_neutral_or_blind_only=None, tags=None):
         self.options = sit_options
         self.option_names = [x.name for x in sit_options]
         self.choice = sit_choice
@@ -90,7 +86,74 @@ class ChoiceSituation:
         self.post_loss_excl_blind_only = post_loss_excl_blind_only
         self.post_win_excl_blind_only = post_win_excl_blind_only
         self.post_neutral_or_blind_only = post_neutral_or_blind_only
-        self.CRRA_ordered_gamble_type = CRRA_ordered_gamble_type
+        self.CRRA_ordered_gamble_info = None
+        self.CRRA_ordered_gamble_type = None
+        self.omega_indifference = None
+        self.tags = tags
+
+    def get_gamble_info(self, lambda_list_f=[0.5, 1.5, 10], omega_list_f=[x / 100 for x in range(-500, 50000, 10)]):
+        t_omega_range_dict = identify_omega_range(payoff_win_f=[x.outcomes['win']['payoff'] for x in self.options if x.name == 'play'][0],
+                                                  payoff_lose_f=[x.outcomes['lose']['payoff'] for x in self.options if x.name == 'play'][0],
+                                                  payoff_fold_f=[x.outcomes['lose']['payoff'] for x in self.options if x.name == 'fold'][0],
+                                                  prob_win_f=[x.outcomes['win']['prob'] for x in self.options if x.name == 'play'][0],
+                                                  lambda_list_f=lambda_list_f,
+                                                  omega_list_f=omega_list_f)  # note: this omega range may need to be changed. If not large enough will throw error and terminate
+
+        for l_level, l_dict in t_omega_range_dict.items():
+            l_dict.update({'gamble_type': classify_gamble_types(l_dict['prob_util']['play_util'],
+                                                                l_dict['prob_util']['fold_util'])})
+            if l_dict['gamble_type'] in ['ERROR', 'prob_risk_increases_omega_increases']:
+                print('CHECK: %s for game %s hand %s, lambda=%f' % (l_dict['gamble_type'], self.tags['game'], self.tags['hand'], l_level))
+        return t_omega_range_dict
+
+    def evaluate_gamble_info(self):
+        if self.CRRA_ordered_gamble_info is None:
+            print("Gamble info not calculated. Call 'get_gamble_info' method first")
+        else:
+            if all([x['gamble_type'] == 'risky_dominant' for x in self.CRRA_ordered_gamble_info.values()]):
+                self.CRRA_ordered_gamble_type = 'risky_dominant'
+            elif all([x['gamble_type'] == 'safe_dominant' for x in self.CRRA_ordered_gamble_info.values()]):
+                self.CRRA_ordered_gamble_type = 'safe_dominant'
+            elif any([x['gamble_type'] == 'prob_risk_decreases_omega_increases' for x in self.CRRA_ordered_gamble_info.values()]):
+                self.CRRA_ordered_gamble_type = 'prob_risk_decreases_omega_increases'
+            else:
+                'CHECK GAMBLE TYPES IN CRRA_ordered_gamble_info'
+
+    def find_omega_indifference(self):
+        if self.CRRA_ordered_gamble_type is None:
+            print("CRRA_ordered_gamble_type is None, call 'evalute_gamble_info' method first")
+        else:
+            try:
+                if self.CRRA_ordered_gamble_type == 'prob_risk_decreases_omega_increases':
+                    self.omega_indifference = fsolve(lambda x: calc_CRRA_utility(outcomes=[x.outcomes for x in self.options if x.name == 'play'][0].values(), omega=x) - calc_CRRA_utility(outcomes=[x.outcomes for x in self.options if x.name == 'fold'][0].values(), omega=x), x0 = 0.4)[0]
+            except:
+                print('Could not find indifference point for game %s hand %s player %s and gamble type %s' % (self.tags['game'], self.tags['hand'], self.tags['player'], self.CRRA_ordered_gamble_type))
+    # Class ChoiceSituaiton accepts additional specification of "ordered" or "dominant" gamble type,
+    # search over range of omegas to determine approximate bounds for assymptotic behavior to 100/0% and 50%
+
+    # currently do not have ordered vs. dominant type working
+
+    def plot_prob(self, add_labels=True):
+        for l, t_data in self.CRRA_ordered_gamble_info.items():
+            t_vec = [x - t_data['prob_util']['prob'][i - 1] for i, x in enumerate(t_data['prob_util']['prob'])]
+            if (t_data['gamble_type'] == 'prob_risk_decreases_omega_increases') and (not ((not all([y > 0 for y in t_vec])) and (not all([y < 0 for y in t_vec])) and (any([y > 0.5 for y in t_data['prob_util']['prob']])))):
+                print('WARNING: game %s hand %s classified as %s but some conditions are not met for this classification' %
+                      (self.tags['game'], self.tags['hand'], t_type))
+            try:
+                # plt.figure()    #####
+                # plt.title('%s' % t_ind) #######
+                t_omega_range = [x / 10000 for x in range(int(t_data['min_omega'] * 10000), int(t_data['max_omega'] * 10000),
+                    int((t_data['max_omega'] - t_data['min_omega']) / (len(t_data['prob_util']['prob'])) * 10000))]
+                plt.plot(t_omega_range[0:len(t_data['prob_util']['prob'])], t_data['prob_util']['prob'])
+                plt.xlabel('omega')
+                plt.ylabel('probability of choosing risker gamble, play')
+            except ZeroDivisionError:
+                print('check calc of t_omega range for lambda = %s gamble_type = %s' % (l, t_data['gamble_type']))
+            del t_vec
+        if add_labels:
+            plt.title('Gamble classified as %s\ngame %s hand %s player %s' % (self.CRRA_ordered_gamble_type, self.tags['game'], self.tags['hand'], self.tags['player']))
+            plt.legend(['lambda=%3.2f' % x for x in self.CRRA_ordered_gamble_info.keys()])
+        del l, t_data
 
     def print(self):
         for k, v in self.__dict__.items():
@@ -137,38 +200,51 @@ class RandomUtilityModel:
                 del t_select_item
         return -sum(LLi)/t_total_obs
 
-    # def negLL_RPM(self, params):
-    #     print('WARNING: negLL_RPM may not be correct. Could not match Apesteguaia 2018 results. Should not be used without further examination')
-    #     def calc_LLi(X, Y, I, omegaxy, omega, kappa, lam, CRRA_order_type):
-    #         return (X + I / 2) * np.log(calc_RPM_prob(riskier_TF=True, omegaxy, omega, kappa, lam, CRRA_order_type)) +\
-    #                (Y + I / 2) * np.log(calc_RPM_prob(riskier_TF=False, omegaxy, omega, kappa, lam, CRRA_order_type))
-    #
-    #     self.kappa_f = params[self.param_names_f.index('kappa')]
-    #     self.lambda_f = params[self.param_names_f.index('lambda')]
-    #     self.omega_f = params[self.param_names_f.index('omega')]
-    #
-    #     LLi = list()
-    #     t_total_obs = 0
-    #     for rank in self.data_f.keys():
-    #         for seat in self.data_f[rank].keys():
-    #             t_risky = 'play'    #### THIS MUST BE UPDATED TO PULL FROM EVALUATION OF GAMBLES
-    #             t_not_risky = 'fold'    #### THIS MUST BE UPDATED TO PULL FROM EVALUATION OF GAMBLES
-    #             t_omegaxy = 0.5     #### THIS MUST BE UPDATED TO PULL FROM EVALUATION OF GAMBLES
-    #             t_CRRA_order_type = 'ordered'     #### THIS MUST BE UPDATED TO PULL FROM EVALUATION OF GAMBLES
-    #             LLi.append(calc_LLi(X=self.data_f[rank][seat]['n_chosen'][t_risky],
-    #                                 Y=self.data_f[rank][seat]['n_chosen'][t_not_risky],
-    #                                 I=0,
-    #                                 omegaxy=t_omegaxy,
-    #                                 omega=self.omega_f,
-    #                                 kappa=self.kappa_f,
-    #                                 lam=self.lambda_f,
-    #                                 CRRA_order_type=t_CRRA_order_type))
-    #             t_total_obs += sum(self.data_f[rank][seat]['n_chosen'].values())
-    #     return -sum(LLi)/t_total_obs
+    def negLL_RPM(self, params):
+        ### WARNING: DON'T HAVE CONFIGURED FOR Y STOCHASTICALLY DOMINATES INSTANCES - CHECK THIS IS CORRECT?
+        def calc_LLi(X_mixed, Y_mixed, omega_xy, omega, lam, kappa, X_xdom, Y_xdom):
+            return (X_mixed * np.log(calc_RPM_prob(util_i=omega_xy, util_j=[omega_xy, omega], lambda_f=lam, kappa_f=kappa))) + \
+                   (Y_mixed * np.log(calc_RPM_prob(util_i=omega, util_j=[omega, omega_xy], lambda_f=lam, kappa_f=kappa))) + \
+                   (X_xdom * np.log(1 - kappa)) + (Y_xdom * np.log(kappa))
+
+        for att in self.param_names_f:
+            setattr(self, att + '_f', params[self.param_names_f.index(att)])
+
+        LLi = list()
+        t_total_obs = 0
+        for rank in self.data_f.keys():
+            for seat in self.data_f[rank].keys():
+                for t_select_item in self.data_f[rank][seat]:
+                    if (t_select_item['CRRA_gamble_type'] == 'prob_risk_decreases_omega_increases') and (t_select_item['omega_indifference'] is not None):
+                        t_wxy = t_select_item['omega_indifference']
+                    else:
+                        t_wxy = 0   #### check implications of setting to 0
+                    t_Xmixed = t_select_item['n_chosen']['play'] if (t_select_item['CRRA_gamble_type'] == 'prob_risk_decreases_omega_increases') else 0
+                    t_Ymixed = t_select_item['n_chosen']['fold'] if (t_select_item['CRRA_gamble_type'] == 'prob_risk_decreases_omega_increases') else 0
+                    t_X_xdom = t_select_item['n_chosen']['play'] if (t_select_item['CRRA_gamble_type'] == 'risky_dominant') else 0
+                    t_Y_xdom = t_select_item['n_chosen']['fold'] if (t_select_item['CRRA_gamble_type'] == 'risky_dominant') else 0
+                    if (t_Xmixed + t_Ymixed + t_X_xdom + t_Y_xdom) != 1:
+                        print('WARNING: CHECK CALCULATION OF TYPE COUNTS IN RPM NEG LL FOR RANK %s SEAT %s' % (rank, seat))
+                    t_LLi = calc_LLi(X_mixed=t_Xmixed,
+                                     Y_mixed=t_Ymixed,
+                                     omega_xy=t_wxy,
+                                     omega=self.omega_f,
+                                     lam=self.lambda_f,
+                                     kappa=self.kappa_f,
+                                     X_xdom=t_X_xdom,
+                                     Y_xdom=t_Y_xdom
+                                     )
+                    LLi.append(t_LLi)
+                    t_total_obs += sum(t_select_item['n_chosen'].values())
+                    del t_wxy, t_Xmixed, t_Ymixed, t_X_xdom, t_Y_xdom, t_LLi
+                del t_select_item
+            del seat
+        del rank
+        return -sum(LLi)/t_total_obs
 
     def fit(self, init_params=None, LL_form='RUM', **kwargs):
         if init_params is None:
-            self.init_params = [1] * len(self.param_names_f)
+            self.init_params = [0.5] * len(self.param_names_f)
         else:
             self.init_params = init_params
 
@@ -190,32 +266,55 @@ class RandomUtilityModel:
             print('%s: %s' % (k, v))
 
 
-def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
-    def get_min_observed_payoff(player_ff, payoff_dict_ff):
-        # get payoffs to examine min payoff for shifting into postive domain
-        obs_avg_payoffs = list()
-        for game_num, hands in payoff_dict_ff[player_ff.name].items():
-            for hand_num, payoffs in hands.items():
-                for outcome, outcomes in payoffs.items():
-                    try:
-                        obs_avg_payoffs = obs_avg_payoffs + list(outcomes.values())
-                    except KeyError:
-                        print('Error for keys game %s and hand %s' % (game_num, hand_num))
+def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f, payoff_shift_player_list_f=None):
+    def get_payoff_dist_chars(payoff_dict_ff, player_ff=None):
+        # get payoffs to examine min payoff for shifting into positive domain
+        # if no player name is provided, then lowest payoff over all situations is found
+        t_obs_avg_payoffs = list()
+        if player_ff is None:
+            t_player_list = payoff_dict_ff.keys()
+        else:
+            t_player_list = player_ff
+
+        for t_player_name in t_player_list:
+            for game_num, hands in payoff_dict_ff[t_player_name].items():
+                for hand_num, payoffs in hands.items():
+                    for outcome, outcomes in payoffs.items():
+                        try:
+                            t_obs_avg_payoffs.append(list(outcomes.values()))
+                        except KeyError:
+                            print('Error for keys game %s and hand %s' % (game_num, hand_num))
+                    del outcome, outcomes
+                del hand_num, payoffs
+            del game_num, hands
+        del t_player_name
+        t_flat_list = [x for y in t_obs_avg_payoffs for x in y]
+
         # plt.figure()
-        # plt.hist(obs_avg_payoffs)
-        # plt.title('Histogram of predicted payoffs for %s from payoff dictionary (unadjusted)' % player_ff.name)
-        return min(obs_avg_payoffs)
+        # plt.hist([x for y in t_obs_avg_payoffs for x in y])
+        # plt.title('Histogram of predicted payoffs for %s from payoff dictionary (unadjusted)' % t_player_list)
+        del t_player_list
+        return {'min': min(t_flat_list), 'max': max(t_flat_list),
+                'mean': np.mean(t_flat_list), 'stdev': np.std(t_flat_list)}
 
     choice_situations_f = list()
     num_choice_situations_dropped = 0
 
     big_blind = 100
     small_blind = 50
-    payoff_units_f = 1/big_blind
-    payoff_shift_f = get_min_observed_payoff(player_f, payoff_dict_f) * -1
+    t_payoff_dist_chars = get_payoff_dist_chars(payoff_dict_f, player_ff=payoff_shift_player_list_f)
+
+    # payoff_units_f = 1/big_blind  # linear transformation
+    # payoff_shift_f = get_min_observed_payoff(payoff_dict_f, player_ff=payoff_shift_player_list_f) * -1                # linear transformation
+    payoff_shift_f = (((t_payoff_dist_chars['min'] - t_payoff_dist_chars['mean']) / t_payoff_dist_chars['stdev']) * -1) + 1     # standard normal transformatoin
 
     for game_num, hands in payoff_dict_f[player_f.name].items():
         for hand_num, probs in hands.items():
+        #     if (hand_num == '166'):
+        #         break
+        # if (game_num == '42'):
+        #     break
+
             # --- play
             tplay_win_prob = prob_dict_f[player_f.name][game_num][hand_num]
             tplay_win_payoff = payoff_dict_f[player_f.name][game_num][hand_num]['play']['win']
@@ -226,9 +325,13 @@ def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
             tfold_lose_payoff = payoff_dict_f[player_f.name][game_num][hand_num]['fold']['lose']
 
             # --- shift/scale payoffs ----
-            tplay_win_payoff = (tplay_win_payoff + payoff_shift_f) * payoff_units_f
-            tplay_lose_payoff = (tplay_lose_payoff + payoff_shift_f) * payoff_units_f
-            tfold_lose_payoff = (tfold_lose_payoff + payoff_shift_f) * payoff_units_f
+            # tplay_win_payoff = (tplay_win_payoff + payoff_shift_f) * payoff_units_f   # linear translation
+            # tplay_lose_payoff = (tplay_lose_payoff + payoff_shift_f) * payoff_units_f # linear translation
+            # tfold_lose_payoff = (tfold_lose_payoff + payoff_shift_f) * payoff_units_f # linear translation
+
+            tplay_win_payoff = (tplay_win_payoff - t_payoff_dist_chars['mean']) / t_payoff_dist_chars['stdev'] + payoff_shift_f
+            tplay_lose_payoff = (tplay_lose_payoff - t_payoff_dist_chars['mean']) / t_payoff_dist_chars['stdev'] + payoff_shift_f
+            tfold_lose_payoff = (tfold_lose_payoff - t_payoff_dist_chars['mean']) / t_payoff_dist_chars['stdev'] + payoff_shift_f
 
             t_choice_options = [Option(name='play', outcomes={'win': {'payoff': tplay_win_payoff, 'prob': tplay_win_prob},
                                                               'lose': {'payoff': tplay_lose_payoff, 'prob': 1 - tplay_win_prob}}),
@@ -251,8 +354,6 @@ def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
                 t_post_win_outcome_xonlyblind_previous_bool = None
                 t_neutral_xonlyblind_bool = None
 
-            # Class ChoiceSituaiton accepts additional specification of "ordered" or "dominant" gamble type,
-            # currently do not have ordered vs. dominant type working
             t_choice_situation = ChoiceSituation(sit_options=t_choice_options[:],
                                                  sit_choice="fold" if player_f.actions[game_num][hand_num]['preflop']['final'] == 'f' else "play",
                                                  slansky_strength=player_f.odds[game_num][hand_num]['slansky'],
@@ -263,17 +364,20 @@ def generate_choice_situations(player_f, prob_dict_f, payoff_dict_f):
                                                  post_neutral=t_neutral_bool,
                                                  post_loss_excl_blind_only=t_post_loss_xonlyblind_previous_bool,
                                                  post_win_excl_blind_only=t_post_win_outcome_xonlyblind_previous_bool,
-                                                 post_neutral_or_blind_only=t_neutral_xonlyblind_bool
+                                                 post_neutral_or_blind_only=t_neutral_xonlyblind_bool,
+                                                 tags={'game': game_num, 'hand': hand_num, 'player': player_f.name}
                                                  )
-
             choice_situations_f.append(t_choice_situation)
             del t_choice_situation
+            del  tfold_win_prob, tfold_lose_payoff, tplay_win_payoff, tplay_lose_payoff, t_choice_options
+            del t_post_loss_bool, t_post_win_bool, t_neutral_bool, t_post_loss_xonlyblind_previous_bool, t_post_win_outcome_xonlyblind_previous_bool, t_neutral_xonlyblind_bool
     del game_num, hands, hand_num
+    del big_blind, small_blind, t_payoff_dist_chars, payoff_shift_f
 
-    t_exp_vals = [cs.options[0].outcomes['win']['prob'] * cs.options[0].outcomes['win']['payoff'] +
-                  cs.options[0].outcomes['lose']['prob'] * cs.options[0].outcomes['lose']['payoff'] +
-                  cs.options[1].outcomes['lose']['prob'] * cs.options[1].outcomes['lose']['payoff']
-                  for cs in choice_situations_f]
+    # t_exp_vals = [cs.options[0].outcomes['win']['prob'] * cs.options[0].outcomes['win']['payoff'] +
+    #               cs.options[0].outcomes['lose']['prob'] * cs.options[0].outcomes['lose']['payoff'] +
+    #               cs.options[1].outcomes['lose']['prob'] * cs.options[1].outcomes['lose']['payoff']
+    #               for cs in choice_situations_f]
     # plt.figure()
     # plt.hist(t_exp_vals, bins=100)
     # plt.title('Choice situation prob/payoff expected values for %s' % player_f.name)
@@ -367,11 +471,14 @@ def reformat_choice_situations_for_model(choice_situations_f):
     choice_param_dictionary_f = {int(rank): {int(seat): [] for seat in set([cs.seat for cs in choice_situations_f])} for
                                  rank in set([cs.slansky_strength for cs in choice_situations_f])}
     for cs in choice_situations_f:
-        t_dict = {'params': {}, 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None}
+        t_dict = {'params': {}, 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'omega_indifference': None}
         for i in range(len(cs.option_names)):
             t_dict['params'].update({cs.option_names[i]: list(cs.options[i].outcomes.values())})
         t_dict['n_chosen'][cs.choice] += 1
+        t_dict['CRRA_gamble_type'] = cs.CRRA_ordered_gamble_type
+        t_dict['omega_indifference'] = cs.omega_indifference
         choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)].append(t_dict)
+
 
     # if no observations exist for a given rank and seat, drop the dictionary item since we have no information with which to estimate the model
     t_drop_keys = list()
@@ -397,18 +504,6 @@ def reformat_choice_situations_for_model(choice_situations_f):
         choice_param_dictionary_f.drop(rank)
 
     del t_drop_keys, t_rank_drop_keys
-
-        ##### need to revise function to evaluate ordered gamble or not
-        # choice_param_dictionary_f[cs.slansky_strength][cs.seat]['CRRA_gamble_type'] = cs.CRRA_ordered_gamble_type['type']
-        # if cs.CRRA_ordered_gamble_type['type'] == 'ordered':
-        #     choice_param_dictionary_f[cs.slansky_strength][cs.seat]['omega_equiv_util'] = cs.CRRA_ordered_gamble_type['cross points']
-        #     # compare utilities as low levels of risk aversion to determine which is risker gamble
-        #     u_play = calc_CRRA_utility(choice_param_dictionary_f[cs.slansky_strength][cs.seat]['params']['play'], cs.CRRA_ordered_gamble_type['cross points'][0] / 2)
-        #     u_fold = calc_CRRA_utility(choice_param_dictionary_f[cs.slansky_strength][cs.seat]['params']['fold'], cs.CRRA_ordered_gamble_type['cross points'][0] / 2)
-        #     if u_play > u_fold:
-        #         choice_param_dictionary_f[cs.slansky_strength][cs.seat]['CRRA_risky_gamble'] = 'play'
-        #     else:
-        #         choice_param_dictionary_f[cs.slansky_strength][cs.seat]['CRRA_risky_gamble'] = 'fold'
 
     return choice_param_dictionary_f
 
@@ -437,6 +532,10 @@ def calc_RUM_prob(util_i, util_j, lambda_f, kappa_f):
         return calc_logit_prob(util_i=util_i, util_j=util_j, lambda_f=lambda_f)
     else:
         return (1 - 2 * kappa_f) * calc_logit_prob(util_i, util_j, lambda_f) + kappa_f    ##################
+
+
+def calc_RPM_prob(util_i, util_j, lambda_f, kappa_f):
+    return (1 - 2 * kappa_f) * calc_logit_prob(util_i, util_j, lambda_f) + kappa_f  ##################
 
 
 def print_auditing_calcs(t_choice_param_dictionary, t_params):
@@ -488,11 +587,22 @@ def run_multistart(nstart_points, t_lb, t_ub, model_object, save_iter=False, sav
 
         if save_iter is not False:
             if (((i + 1) % save_iter) == 0) and (i > 0):
-                with open(os.path.join(save_path,
-                                       'multistart_results_iter' + str(i + save_index_start + 1 - save_iter) + 't' + str(save_index_start + i)), 'wb') as ff:
-                    pickle.dump(results_list, ff)  # pickle.dump(results_list[(i + 1 - save_iter):(i + 1)], ff)
-                    results_list = list()
-
+                try:
+                    with open(os.path.join(multi_start_dir_save_string,
+                                           'multistart_results_iter' + str(i + save_index_start + 1 - save_iter) + 't' + str(save_index_start + i)), 'wb') as ff:
+                        pickle.dump(results_list, ff)  # pickle.dump(results_list[(i + 1 - save_iter):(i + 1)], ff)
+                        results_list = list()
+                except FileNotFoundError:
+                    try:
+                        os.makedirs(multi_start_dir_save_string)
+                        with open(os.path.join(multi_start_dir_save_string,
+                                               'multistart_results_iter' + str(
+                                                   i + save_index_start + 1 - save_iter) + 't' + str(
+                                                   save_index_start + i)), 'wb') as ff:
+                            pickle.dump(results_list, ff)  # pickle.dump(results_list[(i + 1 - save_iter):(i + 1)], ff)
+                            results_list = list()
+                    except FileExistsError as e:
+                        print(e)
 
     # --- alternative storage format, currently unused
     # est_dict = {model_object.param_names_f[0]: [],
@@ -607,10 +717,131 @@ def calc_mle_tstat(param, varcov):
 
 
 # ====== Import data ======
-# ---- actual data ----
-choice_situations = generate_choice_situations(player_f=players[select_player_index], payoff_dict_f=payoff_dict, prob_dict_f=prob_dict)
+# --- Can either import saved data or generate again ---
+# ---- Calculations -----
+try:
+    with open(os.path.join(choice_situations_dir_save_string, select_player_list_save_string), 'rb') as f:
+        choice_situations = pickle.load(f)
+    print('Imported saved choice situations for %s' % select_player_list)
+except FileNotFoundError:
+    print('No saved choice situations found for player %s, creating now' % select_player_list)
+    choice_situations = list()
+    for select_player in select_player_list:
+        select_player_index = [i for i in range(0, len(players)) if players[i].name == select_player][0]
+        game_hand_player_index = create_game_hand_index(players[select_player_index])
+
+        # ---- actual data ----
+        choice_situations.append(generate_choice_situations(player_f=players[select_player_index], payoff_dict_f=payoff_dict, prob_dict_f=prob_dict))
+    del select_player
+    choice_situations = [cs for p in choice_situations for cs in p]
+    # add gamble type evaluations
+    for cs in choice_situations:
+        cs.CRRA_ordered_gamble_info = cs.get_gamble_info(lambda_list_f=[0.5, 1, 2, 10])
+        cs.evaluate_gamble_info()
+        cs.find_omega_indifference()
+
+    if save_TF:
+        try:
+            with open(os.path.join(choice_situations_dir_save_string, select_player_list_save_string), 'wb') as f:
+                pickle.dump(choice_situations, f)
+        except FileNotFoundError:
+            try:
+                os.makedirs(os.path.join(choice_situations_dir_save_string))
+                with open(os.path.join(choice_situations_dir_save_string, select_player_list_save_string), 'wb') as f:
+                    pickle.dump(choice_situations, f)
+            except FileExistsError as e:
+                print(e)
+
+
+# ------ INSPECT TAGGED GAMBLES BY TYPE (CAN DELETE) --------
+# --- collect data
+choice_situations_by_case = {'all': choice_situations, 'post loss': copy.deepcopy([cs for cs in choice_situations if cs.__getattribute__('post_loss_excl_blind_only')]), 'post neutral': copy.deepcopy([cs for cs in choice_situations if cs.__getattribute__('post_neutral_or_blind_only')])}
+gamble_type_summary = dict()
+actual_play_type_summary = dict()
+for t_case_name, t_select_choice_situations in choice_situations_by_case.items():
+    gamble_type_summary[t_case_name] = {l: {t: list() for t in set([x.CRRA_ordered_gamble_info[l]['gamble_type'] for i, x in enumerate(t_select_choice_situations) if x.CRRA_ordered_gamble_info is not None])}
+                           for l in list(set([l for x in t_select_choice_situations if x.CRRA_ordered_gamble_info is not None for l in x.CRRA_ordered_gamble_info.keys()]))}
+    actual_play_type_summary[t_case_name] = {l: {t: list() for t in set([x.CRRA_ordered_gamble_info[l]['gamble_type'] for i, x in enumerate(t_select_choice_situations) if x.CRRA_ordered_gamble_info is not None])}
+                                for l in list(set([l for x in t_select_choice_situations if x.CRRA_ordered_gamble_info is not None for l in x.CRRA_ordered_gamble_info.keys()]))}
+    for l in list(set([l for x in t_select_choice_situations if x.CRRA_ordered_gamble_info is not None for l in x.CRRA_ordered_gamble_info.keys()])):
+        for i, x in enumerate(t_select_choice_situations):
+            if x.CRRA_ordered_gamble_info is not None:
+                gamble_type_summary[t_case_name][l][x.CRRA_ordered_gamble_info[l]['gamble_type']].append(i)
+                if x.choice == 'play':
+                    actual_play_type_summary[t_case_name][l][x.CRRA_ordered_gamble_info[l]['gamble_type']].append(i)
+
+# --- print summary
+for t_case_name in gamble_type_summary.keys():
+    print('\n----- %s -------' % t_case_name)
+    for l in gamble_type_summary[t_case_name].keys():
+        print('\nFor lambda = %3.2f' % l)
+        for k, v in {k: len(v) for k, v in gamble_type_summary[t_case_name][l].items()}.items():
+            print('%s: %d (%3.1f%% chose play, n=%d)' % (k, v, len(actual_play_type_summary[t_case_name][l][k])/v*100, len(actual_play_type_summary[t_case_name][l][k])))
+        del k, v
+    del l
+del t_case_name
+
+# -- calc tstats for case differences
+from assumption_calc_functions import two_sample_test_prop
+case_comparison = [('post neutral', 'post loss')]
+for case in case_comparison:
+    for l in sorted(actual_play_type_summary[case[0]].keys()):
+        print('\n----- For lambda = %3.2f -----' % l)
+        for g_type in actual_play_type_summary[case[0]][l].keys():
+            try:
+                t_p1 = len(actual_play_type_summary[case[0]][l][g_type])/len(gamble_type_summary[case[0]][l][g_type])
+                t_n1 = len(gamble_type_summary[case[0]][l][g_type])
+                t_p2 = len(actual_play_type_summary[case[1]][l][g_type])/len(gamble_type_summary[case[1]][l][g_type])
+                t_n2 = len(gamble_type_summary[case[1]][l][g_type])
+                t_prop_test = two_sample_test_prop(t_p1, t_p2, t_n1, t_n2, n_sides_f=2)
+                print('(%s) %s, diff in play perc: %3.1f%%, pval = %3.1f%%' % ("YES" if t_prop_test[1] <= 0.05 else "NO", g_type, (t_p1 - t_p2)*100, t_prop_test[1]*100))
+                print('---- %s=%3.1f%% (n=%d), %s=%3.1f%% (n=%d)' % (case[0], t_p1 * 100, t_n1, case[1], t_p2 * 100, t_n2))
+                del t_p1, t_n1, t_p2, t_n2
+            except KeyError:
+                print('WARNING: Key error for %s' % g_type)
+        del g_type
+    del l
+del case
+
+# -- plot gamble type probabilities for visual inspection
+for case in [{'post_loss_excl_blind_only': 'post loss', 'post_neutral_or_blind_only': 'post neutral', 'all': 'all' }[select_case]]:
+    t_select_choice_situations = choice_situations_by_case[case]
+    for l in gamble_type_summary[case].keys():
+        for t_type in gamble_type_summary[case][l].keys():
+            plt.figure()
+            plt.title('%s at lambda=%3.2f' % (t_type, l))
+            for t_ind in gamble_type_summary[case][l][t_type]:
+                t_vec = [x - t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['prob_util']['prob'][i - 1]
+                         for i, x in
+                         enumerate(t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['prob_util']['prob'])]
+                if (t_type == 'prob_risk_decreases_omega_increases') and (not (
+                        (not all([y > 0 for y in t_vec])) and (not all([y < 0 for y in t_vec])) and (any(
+                        [y > 0.5 for y in
+                         t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['prob_util']['prob']])))):
+                    print(
+                        'WARNING: game %s hand %s classified as %s but some conditions are not met for this classification' % (
+                        t_select_choice_situations[t_ind].tags['game'], t_select_choice_situations[t_ind].tags['hand'],
+                        t_type))
+                try:
+                    # plt.figure()    #####
+                    # plt.title('%s' % t_ind) #######
+                    t_omega_range = [x/10000 for x in range(int(t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['min_omega']*10000),
+                          int(t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['max_omega']*10000),
+                          int((t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['max_omega'] - t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['min_omega'])/(len(t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['prob_util']['prob']))*10000)
+                          )]
+                    plt.plot(t_omega_range[0:len(t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['prob_util']['prob'])], t_select_choice_situations[t_ind].CRRA_ordered_gamble_info[l]['prob_util']['prob'])
+                    plt.xlabel('omega')
+                    plt.ylabel('probability of choosing risker gamble, play')
+                except ZeroDivisionError:
+                    print('check calc of t_omega range for lambda = %s gamble_type = %s' % (l, t_type))
+                del t_vec
+            del t_ind
+        del t_type
+    del l
+del case
 
 #######
+
 # ---- debugging, can delete ------
 t_counts = {'win': 0, 'loss': 0, 'post_neutral': 0, 'loss_no_blind': 0, 'win_no_blind': 0, 'post_neutral_or_blind_only': 0}
 for cs in choice_situations:
@@ -636,10 +867,11 @@ for k, v in t_counts.items():
 
 # ---- preprocess: partition data and sub-sample -----
 if select_case != 'all':
-    t_candidates = [cs for cs in choice_situations if cs.__getattribute__(select_case)]
+    t_candidates = [cs for cs in choice_situations if (cs.__getattribute__(select_case) and (cs.CRRA_ordered_gamble_type in select_gamble_types))]   # any([v['gamble_type'] in select_gamble_types for l, v in cs.CRRA_ordered_gamble_type.items()]))]
 else:
-    t_candidates = choice_situations
+    t_candidates = [cs for cs in choice_situations if (cs.CRRA_ordered_gamble_type in select_gamble_types)] #any([v['gamble_type'] in select_gamble_types for l, v in cs.CRRA_ordered_gamble_type.items()])]
 choice_param_dictionary = reformat_choice_situations_for_model(random.sample(t_candidates, round(fraction_of_data_to_use_for_estimation * len(t_candidates))))
+omega_max_95percentile = np.quantile([cs.CRRA_ordered_gamble_info[l]['max_omega'] for l in t_candidates[0].CRRA_ordered_gamble_info.keys() for cs in t_candidates], 0.95)
 del t_candidates
 
 # ---- synthetic test data -----
@@ -659,9 +891,10 @@ model = RandomUtilityModel(choice_param_dictionary, param_names_f=['omega', 'lam
 
 # --- fit one model
 model.negLL_RUM([.034, 0.275, 0.661])
+# model.negLL_RPM([.034, 0.275, 0.661])
 model.negLL_RUM([.1, 2, 0.5])
-lb = {'kappa': 0.000, 'lambda': 0.0000, 'omega': 0.000}
-ub = {'kappa': 0.5, 'lambda': 3, 'omega': 3}
+lb = {'kappa': 0.000, 'lambda': 0.0000, 'omega': 0}
+ub = {'kappa': 0.25, 'lambda': 100, 'omega': 2}  # omega_max_95percentile
 # model.kappa_f = kappa_actual    ######
 model.fit(init_params=[0.5, 0.5], LL_form='RUM',
          method='l-bfgs-b',
@@ -672,7 +905,7 @@ model.print()
 
 
 # ============== EXAMINING LIKELIHOOD, CAN DELETE ====================
-def check_likelihood(model_f, lb_f, ub_f):
+def check_likelihood(model_f, lb_f, ub_f, prob_type_f="RUM"):
     # fixomega = 1.01    #model_f.results.x[0]
     # fixlambda = model_f.results.x[1]
     div_factor = 100
@@ -687,7 +920,10 @@ def check_likelihood(model_f, lb_f, ub_f):
         # Examine kappa
         test_LL_fixomega_lambda = list()
         for fo in omega_range:
-            test_LL_fixomega_lambda.append([model_f.negLL_RUM([fo, 3, k]) for k in kappa_range])
+            if (prob_type_f == 'RUM'):
+                test_LL_fixomega_lambda.append([model_f.negLL_RUM([fo, 3, k]) for k in kappa_range])
+            elif (prob_type_f == 'RPM'):
+                test_LL_fixomega_lambda.append([model_f.negLL_RPM([fo, 3, k]) for k in kappa_range])
 
         plt.figure()
         for s in test_LL_fixomega_lambda:
@@ -700,7 +936,10 @@ def check_likelihood(model_f, lb_f, ub_f):
         # Examine lambda
         test_LL_fixomega = list()
         for fo in omega_range:
-            test_LL_fixomega.append([model_f.negLL_RUM([fo, l]) for l in lambda_range])
+            if (prob_type_f == 'RUM'):
+                test_LL_fixomega.append([model_f.negLL_RUM([fo, l]) for l in lambda_range])
+            elif (prob_type_f == 'RPM'):
+                test_LL_fixomega.append([model_f.negLL_RPM([fo, l]) for l in lambda_range])
 
         plt.figure()
         for s in test_LL_fixomega:
@@ -708,11 +947,15 @@ def check_likelihood(model_f, lb_f, ub_f):
         plt.title('Negative LL holding omega fixed at various vals')  # estimate %3.2f' % fixomega)
         plt.xlabel('Lambda')
         plt.legend(['om=' + str(round(o, 2)) for o in omega_range])
+        plt.show()
 
         # Examine omega
         test_LL_fixlambda = list()
         for fl in lambda_range:
-            test_LL_fixlambda.append([model_f.negLL_RUM([o, fl]) for o in omega_range])
+            if (prob_type_f == 'RUM'):
+                test_LL_fixlambda.append([model_f.negLL_RUM([o, fl]) for o in omega_range])
+            elif (prob_type_f == 'RPM'):
+                test_LL_fixlambda.append([model_f.negLL_RPM([o, fl]) for o in omega_range])
 
         plt.figure()
         for s in test_LL_fixlambda:
@@ -720,36 +963,85 @@ def check_likelihood(model_f, lb_f, ub_f):
         plt.title('Negative LL holding lambda fixed at various vals')  # estimate %3.2f' % fixlambda)
         plt.xlabel('omega')
         plt.legend(['lam=' + str(round(l, 2)) for l in lambda_range])
+        plt.show()
 
         #############
         # 2D
-        plt.figure()
-        xx, yy = np.mgrid[omega_range, lambda_range]
-
-        # Extract x and y
-        xx, yy = np.mgrid[min(omega_range):max(omega_range):100j, min(lambda_range):max(lambda_range):100j]
-        positions = np.vstack([xx.ravel(), yy.ravel()])
-        values = np.vstack([omega_range, lambda_range])
-        f = [model_f.negLL_RUM(positions[:, i]) for i in range(positions.shape[1])]
-        F = np.reshape(f(positions).T, xx.shape)
-
-        plt.contour(xx, yy, test_LL_fixlambda, cmap='coolwarm')
+        # plt.figure()
+        # xx, yy = np.mgrid[omega_range, lambda_range]
+        #
+        # # Extract x and y
+        # xx, yy = np.mgrid[min(omega_range):max(omega_range):100j, min(lambda_range):max(lambda_range):100j]
+        # positions = np.vstack([xx.ravel(), yy.ravel()])
+        # values = np.vstack([omega_range, lambda_range])
+        # f = [model_f.negLL_RUM(positions[:, i]) for i in range(positions.shape[1])]
+        # F = np.reshape(f(positions).T, xx.shape)
+        #
+        # plt.contour(xx, yy, test_LL_fixlambda, cmap='coolwarm')
         ####################
     return None
 
-check_likelihood(model, lb, ub)
+check_likelihood(model, lb, ub, prob_type_f='RPM')
+
+
+
+# # observe likelihood over range of omega for single observation holding lambda fixed
+# def truncate_choice_situations(rank_to_keep_f, seat_to_keep_f, max_obs_from_rank_seat_f):
+#     t_cpd = copy.deepcopy(choice_param_dictionary)
+#     # rank_pop_list = [s for s in t_cpd if s not in [rank_to_keep_f]]
+#     # seat_pop_list = list(set([r for _, v in t_cpd.items() for r in list(v.keys()) if r not in [seat_to_keep_f]]))
+#     [t_cpd.pop(k) for k in [s for s in t_cpd if s not in [rank_to_keep_f]] if k in list(t_cpd.keys())]
+#     [v.pop(k) for k in list(set([r for _, v in t_cpd.items() for r in list(v.keys()) if r not in [seat_to_keep_f]])) for v in t_cpd.values() if k in list(v.keys())]
+#     for r in t_cpd.keys():
+#         for s in t_cpd[r].keys():
+#             t_cpd[r][s] = t_cpd[r][s][0:min(len(t_cpd[r][s]), max_obs_from_rank_seat_f)]
+#     del r, s
+#     return t_cpd
+#
+# # test_specs = {9: {3: [{'params': {'play': [{'payoff': 1, 'prob': 0.9}, {'payoff': 60, 'prob': 0.1}], 'fold': [{'payoff': 5, 'prob': 1}, {'payoff': 0, 'prob': 0}]}, 'n_chosen': {'play': 1, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None}]}}
+# # test_specs = {9: {3: [{'params': {'play': [{'payoff': 3850, 'prob': 0.6}, {'payoff': 100, 'prob': 0.4}], 'fold': [{'payoff': 2000, 'prob': 0.6}, {'payoff': 1600, 'prob': 0.4}]}, 'n_chosen': {'play': 0, 'fold': 1}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None}]}}
+# test_specs = truncate_choice_situations(rank_to_keep_f=9, seat_to_keep_f=3, max_obs_from_rank_seat_f=1)
+# model_test = RandomUtilityModel(test_specs, param_names_f=['omega', 'lambda'])
+# # model_test.negLL_RUM(list(model.results.x))
+# # np.exp(-model_test.negLL_RUM(params))
+#
+#
+# div_factor = 100
+# num_points = 40
+# lb_f = {'kappa': 0.0, 'lambda': 0, 'omega': 0}
+# ub_f = {'kappa': 0.5, 'lambda': 10, 'omega': 10}
+#     # lambda_range = [l / div_factor for l in range(int(lb_f['lambda']*div_factor), int(ub_f['lambda']*div_factor), int(div_factor/num_points))] # [l / div_factor for l in range(0, 200, 10)]
+# # lambda_range = [o / div_factor for o in range(int(lb_f['lambda'] * div_factor), int(ub_f['lambda'] * div_factor),
+# #                                               int((int(ub_f['lambda']*div_factor) - int(lb_f['lambda']*div_factor)) / num_points))]
+# lambda_range = [0.5, 1.5, 2.5]
+# omega_range = [o / div_factor for o in range(int(lb_f['omega']*div_factor), int(ub_f['omega']*div_factor), int(int(ub_f['omega']*div_factor - int(lb_f['omega']*div_factor)) / num_points))]
+#
+# test_LL_fixlambda = list()
+# for fl in lambda_range:
+#     test_LL_fixlambda.append([np.exp(-model_test.negLL_RUM([o, fl])) for o in omega_range])
+#
+# plt.figure()
+# for s in test_LL_fixlambda:
+#     plt.plot(omega_range, s)
+# plt.title('Negative LL holding lambda fixed at various vals')  # estimate %3.2f' % fixlambda)
+# plt.xlabel('omega')
+# plt.legend(['lam=' + str(round(l, 2)) for l in lambda_range])
+
 # =============================================
 
 # --- run multistart
 # run and save
-select_results = run_multistart(nstart_points=num_multistarts, t_lb=lb, t_ub=ub, model_object=model, save_iter=save_iter, save_path=save_path, save_index_start=t_save_index_start)
 
-# load from saved
-select_results = list()
-for fn in [f for f in os.listdir(save_path) if os.path.isfile(os.path.join(save_path, f)) if f[0] != '.']:  #os.listdir(save_path):
-    with open(os.path.join(save_path, fn), 'rb') as f:
-        # if fn[len('multistart_results_iter'):][0]=='3': ##########
-        select_results = select_results + pickle.load(f)
+select_results = run_multistart(nstart_points=num_multistarts, t_lb=lb, t_ub=ub, model_object=model, save_iter=save_iter, save_path=multi_start_dir_save_string, save_index_start=t_save_index_start)
+
+try:
+    # load from saved
+    select_results = list()
+    for fn in [f for f in os.listdir(multi_start_dir_save_string) if os.path.isfile(os.path.join(multi_start_dir_save_string, f)) if f[0] != '.']:  # os.listdir(save_path):
+        with open(os.path.join(multi_start_dir_save_string, fn), 'rb') as f:
+            select_results = select_results + pickle.load(f)
+except FileNotFoundError as e:
+    print('No available results with specified configuration\n%s' % e)
 
 #########
 # ---- debugging / auditing, can delete
@@ -770,7 +1062,7 @@ list_dict_params, list_dict_obs = parse_multistart(select_results, param_locs_na
 ########### - CAN DELETE CHECKING RESULTS ################
 plt.figure()
 plt.hist([x['omega'] for x in list_dict_params])
-plt.title('omega')
+plt.title('omega before filtering')
 
 df_params = pd.DataFrame(list_dict_params).set_index('est_run_id')
 df_obs = pd.DataFrame(list_dict_obs)
@@ -778,24 +1070,27 @@ eps = 1e-2
 tstat_limit = 1.96
 df_opt_params = model.param_names_f
 
+lb_additional = {'kappa': lb['kappa'], 'lambda': lb['lambda'], 'omega': lb['omega']}
+ub_additional = {'kappa': ub['kappa'], 'lambda': ub['lambda'], 'omega': 2.2}    #ub['omega']
+
 t_filter = pd.Series(True, index=df_params.index)
-for n in df_opt_params:
-    print(n)
+for n in df_opt_params: #
+    # print(n)
     filter_bounds = (df_params[n] >= (lb[n] + eps)) & (df_params[n] <= (ub[n] - eps))
+    filter_bounds_additional = (df_params[n] >= (lb_additional[n] + eps)) & (df_params[n] <= (ub_additional[n] - eps))
     filter_tstat = (df_params[n + '_tstat'].abs() >= tstat_limit)
     filter_initial = (df_params[n] >= (df_params[n + '_initial'] + eps)) | (df_params[n] <= (df_params[n + '_initial'] - eps))
-    t_filter = t_filter & filter_bounds & filter_initial & filter_tstat
+    t_filter = t_filter & filter_bounds & filter_bounds_additional & filter_initial & filter_tstat
     print('After %s, %d obs remaining' % (n, sum(t_filter)))
 if 'lambda' in df_opt_params:
     filter_lambda1 = (df_params['lambda'] > (1 + eps)) | (df_params['lambda'] < (1 - eps))
 else:
     filter_lambda1 = pd.Series(True, index=df_params.index)
 if 'omega' in df_opt_params:
-    # filter_omega1 = (df_params['omega'] > (1 + eps)) | (df_params['omega'] < (1 - eps))
-    filter_omega1 = df_params['omega'] <= (1 - eps)
+    filter_omega1 = (df_params['omega'] > (1 + eps)) | (df_params['omega'] < (1 - eps))
 
-filter_message = ((df_params.message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL') | (df_params.message == b'CONVERGENCE: REL_REDUCTION_OF_F_<=_FACTR*EPSMCH'))
-ind_filter = df_params.index[t_filter & filter_lambda1 & filter_omega1 & filter_message]  #
+filter_message = ((df_params.message == b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'))# | (df_params.message == b'CONVERGENCE: REL_REDUCTION_OF_F_<=_FACTR*EPSMCH'))
+ind_filter = df_params.index[t_filter & filter_omega1 & filter_lambda1 & filter_message]  #
 print('Across all filters %d/%d observations remain' % (len(ind_filter), df_params.shape[0]))
 
 for n in df_opt_params:
@@ -803,10 +1098,10 @@ for n in df_opt_params:
     df_params.loc[ind_filter][n].hist()
     plt.title('Histogram of ' + n + ' estimates')
 
-if 'lambda' in df_params.columns:
-    plt.figure()
-    plt.hist([np.log(x) for x in df_params.loc[ind_filter]['lambda']])
-    plt.title('Histogram of ln(lambda) estimates')
+# if 'lambda' in df_params.columns:
+#     plt.figure()
+#     plt.hist([np.log(x) for x in df_params.loc[ind_filter]['lambda']])
+#     plt.title('Histogram of ln(lambda) estimates')
 
 df_obs_filtered = df_obs.loc[df_obs.est_run_id.isin(list(ind_filter))]
 plt.figure()
@@ -833,6 +1128,10 @@ print('mean OMEGA = %3.2f' % df_params.loc[ind_filter]['omega'].mean())
 print('mean LAMBDA = %3.2f' % df_params.loc[ind_filter]['lambda'].mean())
 print('stdev OMEGA = %3.5f' % df_params.loc[ind_filter]['omega'].std())
 print('stdev LAMBDA = %3.5f' % df_params.loc[ind_filter]['lambda'].std())
+
+if 'kappa' in model.param_names_f:
+    print('mean KAPPA = %3.2f' % df_params.loc[ind_filter]['kappa'].mean())
+    print('stdev KAPPA = %3.5f' % df_params.loc[ind_filter]['kappa'].std())
 
 
 # df_obs_filtered['pred_exp_value'] = df_obs_filtered.pred
@@ -875,34 +1174,43 @@ print('(Rational) Fold - negative expected value: %3.1f%% (n=%d)' % (sum(~df_rat
 # select_case_hold = select_case  #####
 # select_case = select_case_hold + '_30perc_draw_test'    ######
 # if save_TF:
-#     pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player.lower() + '_multistart_params_' + select_case + '.csv'))
-#     pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player.lower() + '_multistart_obs_' + select_case + '.csv'))
+#     pd.DataFrame(list_dict_params).set_index('est_run_id').to_csv(os.path.join('output', select_player_list_save_string + '_multistart_params_' + select_case + '.csv'))
+#     pd.DataFrame(list_dict_obs).set_index(['est_run_id', 'rank', 'seat']).to_csv(os.path.join('output', select_player_list_save_string + '_multistart_obs_' + select_case + '.csv'))
 
 # save estimated parameter output
 if save_TF:
-    with open(os.path.join(save_path_param_estimates, select_player.lower() +'_' + select_case + '.json'), 'w') as f:
-        t_dict = {p: {'mean': df_params.loc[ind_filter][p].mean(), 'stdev': df_params.loc[ind_filter][p].std(), 'nobs': float(df_params.loc[ind_filter][p].count())} for p in ['omega', 'lambda']}
-        t_dict.update({'proportion_rational': df_rational.rational.sum() / df_rational.shape[0], 'nobs_rational': df_rational.shape[0]})
-        json.dump(t_dict, fp=f)
-        del t_dict
+    try:
+        with open(os.path.join(param_estimates_dir_save_string, select_player_list_save_string +'_' + select_case + '.json'), 'w') as f:
+            t_dict = {p: {'mean': df_params.loc[ind_filter][p].mean(), 'stdev': df_params.loc[ind_filter][p].std(), 'nobs': float(df_params.loc[ind_filter][p].count())} for p in ['omega', 'lambda']}
+            t_dict.update({'proportion_rational': df_rational.rational.sum() / df_rational.shape[0], 'nobs_rational': df_rational.shape[0]})
+            json.dump(t_dict, fp=f)
+            del t_dict
+    except FileNotFoundError:
+        try:
+            os.makedirs(param_estimates_dir_save_string)
+            with open(os.path.join(param_estimates_dir_save_string, select_player_list_save_string +'_' + select_case + '.json'), 'w') as f:
+                t_dict = {p: {'mean': df_params.loc[ind_filter][p].mean(), 'stdev': df_params.loc[ind_filter][p].std(), 'nobs': float(df_params.loc[ind_filter][p].count())} for p in ['omega', 'lambda']}
+                t_dict.update({'proportion_rational': df_rational.rational.sum() / df_rational.shape[0], 'nobs_rational': df_rational.shape[0]})
+                json.dump(t_dict, fp=f)
+                del t_dict
+        except FileExistsError as e:
+            print(e)
 
 # ============== TEST OF DIFFERENCES ==============
 from assumption_calc_functions import two_sample_test_ind_means
 from assumption_calc_functions import two_sample_test_prop
 
-# two_sample_test_ind_means(mu1, mu2, s1, s2, n1, n2, n_sides)
-# two_sample_test_prop(p1_f, p2_f, n1_f, n2_f, n_sides_f)
-
 # specify players and cases
-players_for_testing = ['pluribus', 'mrpink']
-cases_for_testing = ['post_loss_excl_blind_only', 'post_neutral_or_blind_only'] # must only be a list of two currently
+players_for_testing = ['pluribus', 'eddie', 'bill', 'eddie_mrorange_joe_mrblonde_gogo_bill_mrpink_oren_mrblue_budd_mrbrown_mrwhite_hattori'] # 'mrpink', 'mrorange', 'bill',
+cases_for_testing = ['post_neutral_or_blind_only', 'post_loss_excl_blind_only', ] # must only be a list of two currently
 params_for_testing = ['omega', 'lambda']
+prob_case_for_testing = 'dnn_prob'
 
 # load relevant data
 results_dict = {p: {c: {} for c in cases_for_testing} for p in players_for_testing}
 for p in players_for_testing:
     for c in cases_for_testing:
-        with open(os.path.join('output', 'iter_multistart_saves', p, 'est_params', p + '_' + c + '.json'), 'r') as f:
+        with open(os.path.join('output', 'iter_multistart_saves', p, prob_case_for_testing, 'est_params', p + '_' + c + '.json'), 'r') as f:
             results_dict[p][c] = json.load(f)
 
 # compare parameter estimates by case
@@ -910,14 +1218,14 @@ print('\n\n===== change in RISK =====')
 print('For two sample test of independent means (expected value of estimated parameters)')
 print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
 for p in players_for_testing:
-    print('\tFor player %s:' % p)
+    print('\n\n\tFor player %s:' % p)
     for param in params_for_testing:
         print('\t\tParameter: %s' % param)
         print('\t\t\tCase 1: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[0], results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[0]][param]['nobs']))
         print('\t\t\tCase 2: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[1], results_dict[p][cases_for_testing[1]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['nobs']))
         print('\t\tt-stat: %3.2f, p-value: %3.1f' % (two_sample_test_ind_means(results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['mean'],
                                                                                  results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['stdev'],
-                                                                                 results_dict[p][cases_for_testing[0]][param]['nobs'], results_dict[p][cases_for_testing[1]][param]['nobs'], n_sides=2)))
+                                                                                 results_dict[p][cases_for_testing[0]][param]['nobs'], results_dict[p][cases_for_testing[1]][param]['nobs'], n_sides=2, print_f=False)))
 
 # compare proportion of rational decisions by case
 print('\n\n===== change in RATIONALITY ======')
