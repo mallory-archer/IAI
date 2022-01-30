@@ -272,6 +272,9 @@ df = import_dataset()
 df['win_TF'] = df.outcome > 0   # ###### move this to upstream data processing
 df['preflop_num_final_participants_more_than_1'] = df.preflop_num_final_participants > 1
 
+df['start_stack_shifted'] = (df.start_stack - df.start_stack.min() + 1)
+df['start_stack_relative'] = df.groupby(['game', 'hand'], group_keys=False).apply(lambda x: x.start_stack_shifted / x.start_stack_shifted.min())
+
 # ---- get list of opponents
 df = df.merge(df.loc[df.preflop_play_TF].groupby(['game', 'hand']).player.unique().reset_index().rename(columns={'player': 'preflop_players'}), how='left', on=['game', 'hand'])
 if sum(df.apply(lambda x: len(x.preflop_players) - x.preflop_num_final_participants, axis=1)) != 0:

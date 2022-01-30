@@ -9,8 +9,8 @@ import pickle
 import matplotlib.pyplot as plt
 
 from RUM_functions_classes import RandomUtilityModel, ChoiceSituation, Option
-from RUM_functions_classes import generate_choice_situations, generate_synthetic_data, reformat_choice_situations_for_model, calc_CRRA_utility, run_multistart, parse_multistart, calc_robust_varcov, calc_mle_tstat, check_likelihood
-from assumption_calc_functions import two_sample_test_prop
+from RUM_functions_classes import generate_choice_situations, generate_synthetic_data, reformat_choice_situations_for_model, calc_CRRA_utility, run_multistart, parse_multistart, calc_robust_varcov, calc_mle_tstat, check_likelihood, calc_RUM_prob
+from assumption_calc_functions import two_sample_test_prop, two_sample_test_ind_means
 from control_params import control_param_dict, ControlParams, results_param_dict, ResultsParams
 
 pd.options.display.max_columns = 25
@@ -302,6 +302,7 @@ def calc_util_rational(exp_omega, choice_param_dictionary):
                 else:
                     print('Error in categorizing choices')
                 item.update({'exp_util_omega_' + str(int(round(exp_omega, 4) * 10000)) + 'e4': {
+                    'omega': exp_omega,
                     'play': t_play,
                     'fold': t_fold,
                     'rational_TF': t_rational_TF,
@@ -309,7 +310,7 @@ def calc_util_rational(exp_omega, choice_param_dictionary):
     return choice_param_dictionary, 'exp_util_omega_' + str(int(round(exp_omega, 4) * 10000)) + 'e4'
 
 
-def count_rational_action_types(choice_param_dictionary, exp_omega_key):
+def count_rational_action_types(choice_param_dictionary, exp_omega_key, print_summary_TF=True):
     t_list = list()
     for rank in choice_param_dictionary.keys():
         for seat in choice_param_dictionary[rank].keys():
@@ -328,17 +329,18 @@ def count_rational_action_types(choice_param_dictionary, exp_omega_key):
     if ((total_rational + total_irrational) != total_obs) or ((total_play + total_fold) != total_obs) or ((total_should_have_played + total_should_have_folded != total_obs)):
         print('WARNING: CHECK RATIONAL ACTION COUNTS')
 
-    print('--- Rational choice:')
-    print('(Rational) Blended: %3.1f%% (n=%d):' % (
-        total_rational / total_obs * 100, total_obs))
-    print('(Rational)   Play - positive expected value: %3.1f%% (n=%d)' % (
-        t_dict['rational_play'] / total_should_have_played * 100, t_dict['rational_play']))
-    print('(Irrational) Fold - positive expected value: %3.1f%% (n=%d)' % (
-        t_dict['irrational_fold'] / total_should_have_played * 100, t_dict['irrational_fold']))
-    print('(Irrational)   Play - negative expected value: %3.1f%% (n=%d)' % (
-        t_dict['irrational_play'] / total_should_have_folded * 100, t_dict['irrational_play']))
-    print('(Rational) Fold - negative expected value: %3.1f%% (n=%d)' % (
-        t_dict['rational_fold'] / total_should_have_folded * 100, t_dict['rational_fold']))
+    if print_summary_TF:
+        print('--- Rational choice:')
+        print('(Rational) Blended: %3.1f%% (n=%d):' % (
+            total_rational / total_obs * 100, total_obs))
+        print('(Rational)   Play - positive expected value: %3.1f%% (n=%d)' % (
+            t_dict['rational_play'] / total_should_have_played * 100, t_dict['rational_play']))
+        print('(Irrational) Fold - positive expected value: %3.1f%% (n=%d)' % (
+            t_dict['irrational_fold'] / total_should_have_played * 100, t_dict['irrational_fold']))
+        print('(Irrational)   Play - negative expected value: %3.1f%% (n=%d)' % (
+            t_dict['irrational_play'] / total_should_have_folded * 100, t_dict['irrational_play']))
+        print('(Rational) Fold - negative expected value: %3.1f%% (n=%d)' % (
+            t_dict['rational_fold'] / total_should_have_folded * 100, t_dict['rational_fold']))
 
     return t_dict
 
@@ -354,6 +356,8 @@ def save_parameter_estimates(df_params, rationality_summary, select_model_param_
                 t_dict.update(rationality_summary)
                 json.dump(t_dict, fp=f)
                 del t_dict
+            df_params.to_csv(os.path.join(param_estimates_dir_save_string,
+                                          select_player_list_save_string + '_' + select_case + '.csv'))
         except FileNotFoundError:
             try:
                 os.makedirs(param_estimates_dir_save_string)
@@ -364,12 +368,67 @@ def save_parameter_estimates(df_params, rationality_summary, select_model_param_
                     t_dict.update(rationality_summary)
                     json.dump(t_dict, fp=f)
                     del t_dict
+                df_params.to_csv(os.path.join(param_estimates_dir_save_string,
+                                              select_player_list_save_string + '_' + select_case + '.csv'))
             except FileExistsError as e:
                 print(e)
 
 
+def aggregate_param_estimates(rp, save_TF=False):
+    list_df_params_select = list()
+    list_df_params_all = list()
+    for player in rp.select_player_list:
+        if not isinstance(player, list):
+            rp.set_player_list_save_string([player])
+        else:
+            rp.set_player_list_save_string(player)
+        rp.set_param_estimates_dir_save_string(rp.select_player_list_save_string)
+        for state in rp.select_states:
+            # load in estimates
+            try:
+                t_select_case = state + '_select' + str(rp.num_param_estimates)
+                t_df_select = pd.read_csv(os.path.join(rp.param_estimates_dir_save_string,
+                                                rp.select_player_list_save_string + '_' + t_select_case + '.csv'))
+                t_df_select['player'] = pd.Series([player] * t_df_select.shape[0])
+                t_df_select['state'] = pd.Series([state] * t_df_select.shape[0])
+                list_df_params_select.append(t_df_select)
+
+                t_df_select_all = pd.read_csv(os.path.join(rp.param_estimates_dir_save_string,
+                                                     rp.select_player_list_save_string + '_' + state + '.csv'))
+                t_df_select_all['player'] = pd.Series([player] * t_df_select_all.shape[0])
+                t_df_select_all['state'] = pd.Series([state] * t_df_select_all.shape[0])
+                list_df_params_all.append(t_df_select_all)
+
+                del t_select_case, t_df_select, t_df_select_all
+            except FileNotFoundError as e:
+                print('%s for player %s state %s' % (e, player, state))
+
+    df_agg_params = pd.DataFrame()
+    for t_df_select in list_df_params_select:
+        df_agg_params = pd.concat([df_agg_params, t_df_select], ignore_index=True)
+    df_agg_params.drop(columns=['Unnamed: 0'], inplace=True)
+
+    df_agg_params_all = pd.DataFrame()
+    for t_df_select_all in list_df_params_all:
+        df_agg_params_all = pd.concat([df_agg_params_all, t_df_select_all])
+    # df_agg_params_all.drop(columns=['Unnamed: 0'], inplace=True)
+
+    if save_TF:
+        try:
+            df_agg_params.to_csv(os.path.join(rp.results_save_string, 'param_estimates_select.csv'))
+            df_agg_params_all.to_csv(os.path.join(rp.results_save_string, 'param_estimates_all.csv'))
+        except FileNotFoundError:
+            try:
+                os.makedirs(os.path.join(rp.results_save_string))
+                df_agg_params.to_csv(os.path.join(rp.results_save_string, 'param_estimates_select.csv'))
+                df_agg_params_all.to_csv(os.path.join(rp.results_save_string, 'param_estimates_all.csv'))
+            except FileExistsError as e:
+                print(e)
+    return df_agg_params, df_agg_params_all
+
+
 def main(cp):
-    # (REQ) ===== SET CONTROL PARAMS =====
+    # (OPT) ===== SET CONTROL PARAMS =====
     print('Value of control params: %s\n' % cp.print_params())
 
     # ====== IMPORT DATA ======
@@ -385,7 +444,7 @@ def main(cp):
     # inspect_gambles_by_type(choice_situations,
     #                         select_cases=['post_neutral_or_blind_only', 'post_loss_excl_blind_only', 'post_win_excl_blind_only'],
     #                         case_comparison=[('post_neutral_or_blind_only', 'post_loss_excl_blind_only'), ('post_neutral_or_blind_only', 'post_win_excl_blind_only')],
-    #                         select_plot_cases=['post_neutral_or_blind_only', 'post_loss_excl_blind_only'], plot_TF=True)
+    #                         select_plot_cases=['post_neutral_or_blind_only'], plot_TF=True)
 
     # (REQ) --- subselect data for certain types of gambles, previous outcomes, test set
     choice_param_dictionary, omega_max_95percentile = subselect_data(cp.select_case, choice_situations, cp.select_gamble_types, cp.fraction_of_data_to_use_for_estimation)
@@ -402,7 +461,7 @@ def main(cp):
 
     # ==== MULTISTART MODEL FITTING ==========
     # (OPT- IF ALREADY SAVED CAN JUST LOAD) --------
-    select_results = run_multistart(nstart_points=cp.num_multistarts, est_param_dictionary={'options': {'ftol': cp.ftol, 'gtol': cp.gtol, 'maxiter': cp.maxiter, 'disp': None}, 'lb': cp.lb_model, 'ub': cp.ub_model}, model_object=model, save_iter=cp.save_iter, save_path=cp.multi_start_dir_save_string, save_index_start=cp.save_index_start)
+    # select_results = run_multistart(nstart_points=cp.num_multistarts, est_param_dictionary={'options': {'ftol': cp.ftol, 'gtol': cp.gtol, 'maxiter': cp.maxiter, 'disp': None}, 'lb': cp.lb_model, 'ub': cp.ub_model}, model_object=model, save_iter=cp.save_iter, save_path=cp.multi_start_dir_save_string, save_index_start=cp.save_index_start)
 
     # (OPT- IF RUNNING MULTISTART NO NEED) -----
     select_results, select_models = load_multistart(cp.multi_start_dir_save_string)
@@ -427,12 +486,12 @@ def create_output(rp):
     # load choice situations
 
     t_obs_list = list()
+    t_est_list = list()
     for player in rp.select_player_list:
         if not isinstance(player, list):
             rp.set_player_list_save_string([player])
         else:
             rp.set_player_list_save_string(player)
-        print(rp.select_player_list_save_string)
         rp.set_param_estimates_dir_save_string(rp.select_player_list_save_string)
 
         choice_situations = load_choice_situation_data(None, None, None,
@@ -448,34 +507,61 @@ def create_output(rp):
 
             # load in estimates
             try:
-                with open(os.path.join(rp.param_estimates_dir_save_string,
-                                       rp.select_player_list_save_string + '_' + state + '.json'), 'r') as f:
-                    estimates_dict = json.load(f)
+                df_params = pd.read_csv(os.path.join(rp.param_estimates_dir_save_string,
+                                                     rp.select_player_list_save_string + '_' + state + '.csv'))
+                df_params['select_for_output'] = pd.Series([True] * min(df_params.shape[0], rp.num_param_estimates) + [False] * (df_params.shape[0] - min(df_params.shape[0], rp.num_param_estimates)))
 
-                    choice_param_dictionary, exp_omega_key = calc_util_rational(estimates_dict['omega']['mean'],
-                                                                                choice_param_dictionary)
+                #######################
+                # Check number of gambles that have indifference omega less than exected value of omega
+                count_mixed = 0
+                count_less_than_mean = 0
+                for cs in choice_situations:
+                    if cs.CRRA_ordered_gamble_type == 'prob_risk_decreases_omega_increases' and cs.__getattribute__(state):
+                        count_mixed += 1
+                        if cs.omega_indifference is not None:
+                            if cs.omega_indifference < df_params.loc[df_params.select_for_output, 'omega'].mean():
+                                count_less_than_mean += 1
+                print('For state %s player %s\n%d of %d (%3.1f%%) mixed gambles choice situations have indifference omega < average of selected estimates' % (
+                    state, player, count_less_than_mean, count_mixed, count_less_than_mean / count_mixed * 100
+                ))
+                #######################
+
+                df_select_params = df_params.loc[df_params['select_for_output']].reindex()
+
+                choice_param_dictionary, exp_omega_key = calc_util_rational(df_select_params['omega'].mean(), choice_param_dictionary)
+
+                save_parameter_estimates(df_select_params, rationality_summary=count_rational_action_types(choice_param_dictionary, exp_omega_key, print_summary_TF=False), select_model_param_names=rp.select_model_param_names,
+                                         param_estimates_dir_save_string=rp.param_estimates_dir_save_string,
+                                         select_player_list_save_string=rp.select_player_list_save_string, select_case=state + '_select' + str(df_select_params.shape[0]),
+                                         save_TF=rp.save_TF)
+                t_est_list.append({'player': player, 'state': state,
+                                   'est': {pe: {'mean': df_select_params[pe].mean(), 'stdev': df_select_params[pe].std(), 'nobs': df_select_params.shape[0]} for pe in rp.select_model_param_names}})
 
                 for rank in choice_param_dictionary.keys():
                     for seat in choice_param_dictionary[rank].keys():
+                        temp_choice_situations = [cs for cs in choice_situations if (cs.slansky_strength == rank) and (cs.seat == seat)]
                         for item in choice_param_dictionary[rank][seat]:
                             # item = choice_param_dictionary[1][1][0] #######
+                            if item['CRRA_gamble_type'] == 'prob_risk_decreases_omega_increases':
+                                t_check = item['omega_indifference'] < item[exp_omega_key]['omega']
+                            else:
+                                t_check = None
                             t_dict = {'CRRA_gamble_type': item['CRRA_gamble_type'], 'player': player, 'seat': seat,
-                                      'rank': rank, 'cs_id': item['id']}
+                                      'rank': rank, 'cs_id': item['id'], 'omega_indifference_less_than_exp': t_check, 'omega_indifference': item['omega_indifference'], 'est_omega': item[exp_omega_key]['omega']
+                                      }
                             for k, outcomes in item['params'].items():
                                 for i in range(len(outcomes)):
                                     t_dict.update({k + '_' + j + str(i): v for j, v in outcomes[i].items()})
                             t_dict.update(item['n_chosen'])
                             for k in ['rational_TF', 'rational_choice_type']:
                                 t_dict.update({k: item[exp_omega_key][k]})
-                            t_dict.update({'state': [x for x in rp.select_states if [cs for cs in choice_situations if
-                                                                                     (cs.slansky_strength == rank) and (
-                                                                                             cs.seat == seat) and (
-                                                                                             cs.tags['id'] == item[
-                                                                                         'id'])][
-                                0].__getattribute__(x)][0]})
+                            for k in ['play', 'fold']:
+                                t_dict.update({k+'_util': item[exp_omega_key][k]})
+                            t_dict.update({'prob_play': calc_RUM_prob(util_i=item[exp_omega_key]['play'], util_j=[item[exp_omega_key]['play'], item[exp_omega_key]['fold']], lambda_f=df_select_params['lambda'].mean(), kappa_f=None)})
+                            t_dict.update({'state': [x for x in rp.select_states if [cs for cs in temp_choice_situations if (cs.tags['id'] == item['id'])][0].__getattribute__(x)][0]})
                             t_obs_list.append(t_dict)
-                            del t_dict
-                        del item
+                            del t_dict, t_check
+                        del item, temp_choice_situations
                     del seat
                 del rank
 
@@ -486,7 +572,7 @@ def create_output(rp):
         del state
     del player
 
-    # create data frame for export
+    # create OBS data frame for export
     df_choices = pd.DataFrame(t_obs_list)
     df_choices['choice'] = 'fold'
     df_choices.loc[df_choices['play'] == 1, 'choice'] = 'play'
@@ -495,10 +581,56 @@ def create_output(rp):
             df_choices.loc[df_choices['fold'] == 1, 'choice'] != 'fold'):
         print('WARNING: mismapping of play/fold binary columns')
 
+    # ------------- HYPOTHESIS TESTING ------------------------
+    # create estimates data frame with two sample test for difference of means for export
+    t_list_comp = list()
+    for i, p1 in enumerate(t_est_list):
+        for j, p2 in enumerate(t_est_list):
+            if j > i:
+                for pe in rp.select_model_param_names:
+                    t_dict = {'player1': p1['player'], 'player2': p2['player'], 'p1_state': p1['state'],
+                              'p2_state': p2['state'],
+                              'param': pe, 'p1_mean': p1['est'][pe]['mean'], 'p1_stdev': p1['est'][pe]['stdev'], 'p1_nobs': p1['est'][pe]['nobs'],
+                              'p2_mean': p2['est'][pe]['mean'], 'p2_stdev': p2['est'][pe]['stdev'], 'p2_nobs': p2['est'][pe]['nobs']}
+                    t_dict.update(dict(zip(['tstat', 'pval'], two_sample_test_ind_means(t_dict['p1_mean'],
+                                               t_dict['p2_mean'],
+                                               t_dict['p1_stdev'],
+                                               t_dict['p2_stdev'],
+                                               t_dict['p1_nobs'],
+                                               t_dict['p2_nobs'], n_sides=rp.hypothesis_test_nsides, print_f=False))))
+                    t_list_comp.append(t_dict)
+                    del t_dict
+                del pe
+        del j
+    del i
+
+    # create rational hypothesis testing dataframe for export
+    t_master = df_choices.reindex()
+    t_master['player'] = t_master.player.apply(lambda x: '_'.join(x) if isinstance(x, list) else x)
+    t_col = 'rational_TF'
+    t_df = t_master.groupby(['player', 'state', 'CRRA_gamble_type']).agg({t_col: ['sum', 'count']}).droplevel(0, axis=1).reset_index()
+    t_df['prop_' + t_col] = t_df['sum'] / t_df['count']
+
+    t_list_prop = list()
+    for _, row1 in t_df.iterrows():
+        for _, row2 in t_df.iterrows():
+            t_dict = {'player1': row1['player'], 'player2': row2['player'], 'p1_state': row1['state'], 'p2_state': row2['state'], 'p1_gamble': row1['CRRA_gamble_type'], 'p2_gamble': row2['CRRA_gamble_type']}
+            t_dict.update(dict(zip(['tstat', 'pval'], two_sample_test_prop(row1['prop_' + t_col], row2['prop_' + t_col], row1['count'], row2['count'], n_sides_f=2))))
+            t_list_prop.append(t_dict)
+            del t_dict
+        del row2
+    del row1, t_df
+
+    # create aggregated file of parameter estimates used to generate other data
+    _ = aggregate_param_estimates(rp, save_TF=rp.save_TF)
+
     if rp.save_TF:
         try:
             with open(os.path.join(rp.results_save_string, 'choice_analysis.csv'), 'w') as f:
                 df_choices.to_csv(f)
+
+            pd.DataFrame(t_list_comp).to_csv(os.path.join(rp.results_save_string, 'parameter_hypothesis_testing.csv'))
+            pd.DataFrame(t_list_prop).to_csv(os.path.join(rp.results_save_string, 'rationality_proportion_hypothesis_testing.csv'))
         except FileNotFoundError:
             try:
                 os.makedirs(os.path.join(rp.results_save_string))
@@ -507,84 +639,84 @@ def create_output(rp):
             except FileExistsError as e:
                 print(e)
 
-    return df_choices
+    return df_choices, pd.DataFrame(t_list_comp), pd.DataFrame(t_list_prop)
 
 
 _ = create_output(rp=ResultsParams(results_param_dict))
 
 
-def analyze():
-    # ============== TEST OF DIFFERENCES ==============
-    from assumption_calc_functions import two_sample_test_ind_means
-    from assumption_calc_functions import two_sample_test_prop
-
-    # specify players and cases
-    players_for_testing = ['pluribus',  'eddie_mrorange_joe_mrblonde_gogo_bill_mrpink_oren_mrblue_budd_mrbrown_mrwhite_hattori']  #, 'eddie', 'bill', 'eddie_mrorange_joe_mrblonde_gogo_bill_mrpink_oren_mrblue_budd_mrbrown_mrwhite_hattori'] # 'mrpink', 'mrorange', 'bill',
-    cases_for_testing = ['post_neutral_or_blind_only', 'post_win_excl_blind_only'] # must only be a list of two currently,  'post_loss_excl_blind_only',
-    params_for_testing = ['omega', 'lambda']
-    prob_case_for_testing = 'dnn_prob'
-
-    # load relevant data
-    results_dict = {p: {c: {} for c in cases_for_testing} for p in players_for_testing}
-    for p in players_for_testing:
-        for c in cases_for_testing:
-            with open(os.path.join('output', 'iter_multistart_saves', p, prob_case_for_testing, 'est_params', p + '_' + c + '.json'), 'r') as f:
-                results_dict[p][c] = json.load(f)
-        del c
-    del p
-
-    # compare parameter estimates by case
-    print('\n\n===== change in RISK =====')
-    print('For two sample test of independent means (expected value of estimated parameters)')
-    print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
-    for p in players_for_testing:
-        print('\n\n\tFor player %s:' % p)
-        for param in params_for_testing:
-            print('\t\tParameter: %s' % param)
-            print('\t\t\tCase 1: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[0], results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[0]][param]['nobs']))
-            print('\t\t\tCase 2: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[1], results_dict[p][cases_for_testing[1]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['nobs']))
-            print('\t\tt-stat: %3.2f, p-value: %3.1f' % (two_sample_test_ind_means(results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['mean'],
-                                                                                results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['stdev'],
-                                                                                     results_dict[p][cases_for_testing[0]][param]['nobs'], results_dict[p][cases_for_testing[1]][param]['nobs'], n_sides=2, print_f=False)))
-        del param
-    del p
-
-    # compare proportion of rational decisions by case
-    print('\n\n===== change in RATIONALITY ======')
-    print('For two sample test of proportions (change in proportion of rational actions)')
-    print('Player 1: %s, \t Player 2: %s' % (players_for_testing[0], players_for_testing[1]))
-    for case in cases_for_testing:
-        print('\tFor case %s:' % case)
-        n1 = sum([v for k, v in results_dict[players_for_testing[0]][case].items() if k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
-        p1 = (results_dict[players_for_testing[0]][case]['rational_play'] + results_dict[players_for_testing[0]][case]['rational_fold'])/n1
-        n2 = sum([v for k, v in results_dict[players_for_testing[1]][case].items() if k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
-        p2 = (results_dict[players_for_testing[1]][case]['rational_play'] + results_dict[players_for_testing[1]][case]['rational_fold'])/n2
-
-        print('\t\tproportion = %3.2f, n = %d, player 1: %s' % (p1, n1, players_for_testing[0]))
-        print('\t\tproportion = %3.2f, n = %d, player 2: %s' % (p2, n2, players_for_testing[1]))
-        print('\tt-stat: %3.2f, p-value: %3.3f' % (two_sample_test_prop(p1, p2, n1, n2,
-                                                     n_sides_f=2)))
-    del case
-
-    # compare proportion of rational actions across players
-    print('\n\n===== change in RATIONALITY ======')
-    print('For two sample test of proportions (change in proportion of rational actions)')
-    print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
-    for p in players_for_testing:
-        print('\tFor player %s:' % p)
-        n1 = sum([v for k, v in results_dict[p][cases_for_testing[0]].items() if
-                  k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
-        p1 = (results_dict[p][cases_for_testing[0]]['rational_play'] + results_dict[p][cases_for_testing[0]][
-            'rational_fold']) / n1
-        n2 = sum([v for k, v in results_dict[p][cases_for_testing[1]].items() if
-                  k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
-        p2 = (results_dict[p][cases_for_testing[1]]['rational_play'] + results_dict[p][cases_for_testing[1]][
-            'rational_fold']) / n2
-
-        print('\t\tCase 1: %s, proportion = %3.2f, n = %d' % (cases_for_testing[0], p1, n1))
-        print('\t\tCase 2: %s, proportion = %3.2f, n = %d' % (cases_for_testing[1], p2, n2))
-        print('\tt-stat: %3.2f, p-value: %3.3f' % (two_sample_test_prop(p1, p2, n1, n2,
-                                                                        n_sides_f=2)))
+# def analyze():
+#     # ============== TEST OF DIFFERENCES ==============
+#     from assumption_calc_functions import two_sample_test_ind_means
+#     from assumption_calc_functions import two_sample_test_prop
+#
+#     # specify players and cases
+#     players_for_testing = ['pluribus',  'eddie_mrorange_joe_mrblonde_gogo_bill_mrpink_oren_mrblue_budd_mrbrown_mrwhite_hattori']  #, 'eddie', 'bill', 'eddie_mrorange_joe_mrblonde_gogo_bill_mrpink_oren_mrblue_budd_mrbrown_mrwhite_hattori'] # 'mrpink', 'mrorange', 'bill',
+#     cases_for_testing = ['post_neutral_or_blind_only', 'post_win_excl_blind_only'] # must only be a list of two currently,  'post_loss_excl_blind_only',
+#     params_for_testing = ['omega', 'lambda']
+#     prob_case_for_testing = 'dnn_prob'
+#
+#     # load relevant data
+#     results_dict = {p: {c: {} for c in cases_for_testing} for p in players_for_testing}
+#     for p in players_for_testing:
+#         for c in cases_for_testing:
+#             with open(os.path.join('output', 'iter_multistart_saves', p, prob_case_for_testing, 'est_params', p + '_' + c + '.json'), 'r') as f:
+#                 results_dict[p][c] = json.load(f)
+#         del c
+#     del p
+#
+#     # compare parameter estimates by case
+#     print('\n\n===== change in RISK =====')
+#     print('For two sample test of independent means (expected value of estimated parameters)')
+#     print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
+#     for p in players_for_testing:
+#         print('\n\n\tFor player %s:' % p)
+#         for param in params_for_testing:
+#             print('\t\tParameter: %s' % param)
+#             print('\t\t\tCase 1: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[0], results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[0]][param]['nobs']))
+#             print('\t\t\tCase 2: %s, mean = %3.2f, stdev = %3.2f, n = %d' % (cases_for_testing[1], results_dict[p][cases_for_testing[1]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['nobs']))
+#             print('\t\tt-stat: %3.2f, p-value: %3.1f' % (two_sample_test_ind_means(results_dict[p][cases_for_testing[0]][param]['mean'], results_dict[p][cases_for_testing[1]][param]['mean'],
+#                                                                                 results_dict[p][cases_for_testing[0]][param]['stdev'], results_dict[p][cases_for_testing[1]][param]['stdev'],
+#                                                                                      results_dict[p][cases_for_testing[0]][param]['nobs'], results_dict[p][cases_for_testing[1]][param]['nobs'], n_sides=2, print_f=False)))
+#         del param
+#     del p
+#
+#     # compare proportion of rational decisions by case
+#     print('\n\n===== change in RATIONALITY ======')
+#     print('For two sample test of proportions (change in proportion of rational actions)')
+#     print('Player 1: %s, \t Player 2: %s' % (players_for_testing[0], players_for_testing[1]))
+#     for case in cases_for_testing:
+#         print('\tFor case %s:' % case)
+#         n1 = sum([v for k, v in results_dict[players_for_testing[0]][case].items() if k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
+#         p1 = (results_dict[players_for_testing[0]][case]['rational_play'] + results_dict[players_for_testing[0]][case]['rational_fold'])/n1
+#         n2 = sum([v for k, v in results_dict[players_for_testing[1]][case].items() if k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
+#         p2 = (results_dict[players_for_testing[1]][case]['rational_play'] + results_dict[players_for_testing[1]][case]['rational_fold'])/n2
+#
+#         print('\t\tproportion = %3.2f, n = %d, player 1: %s' % (p1, n1, players_for_testing[0]))
+#         print('\t\tproportion = %3.2f, n = %d, player 2: %s' % (p2, n2, players_for_testing[1]))
+#         print('\tt-stat: %3.2f, p-value: %3.3f' % (two_sample_test_prop(p1, p2, n1, n2,
+#                                                      n_sides_f=2)))
+#     del case
+#
+#     # compare proportion of rational actions across players
+#     print('\n\n===== change in RATIONALITY ======')
+#     print('For two sample test of proportions (change in proportion of rational actions)')
+#     print('case 1: %s, \t case2: %s' % (cases_for_testing[0], cases_for_testing[1]))
+#     for p in players_for_testing:
+#         print('\tFor player %s:' % p)
+#         n1 = sum([v for k, v in results_dict[p][cases_for_testing[0]].items() if
+#                   k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
+#         p1 = (results_dict[p][cases_for_testing[0]]['rational_play'] + results_dict[p][cases_for_testing[0]][
+#             'rational_fold']) / n1
+#         n2 = sum([v for k, v in results_dict[p][cases_for_testing[1]].items() if
+#                   k in ['rational_play', 'rational_fold', 'irrational_play', 'irrational_fold']])
+#         p2 = (results_dict[p][cases_for_testing[1]]['rational_play'] + results_dict[p][cases_for_testing[1]][
+#             'rational_fold']) / n2
+#
+#         print('\t\tCase 1: %s, proportion = %3.2f, n = %d' % (cases_for_testing[0], p1, n1))
+#         print('\t\tCase 2: %s, proportion = %3.2f, n = %d' % (cases_for_testing[1], p2, n2))
+#         print('\tt-stat: %3.2f, p-value: %3.3f' % (two_sample_test_prop(p1, p2, n1, n2,
+#                                                                         n_sides_f=2)))
 
 
 # analyze()

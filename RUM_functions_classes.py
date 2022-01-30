@@ -472,15 +472,6 @@ def generate_synthetic_data(add_gamble_type_info_TF=False):
 
 def reformat_choice_situations_for_model(choice_situations_f, print_obs_summary=True):
     # create dictionary of option params
-    ##### OLD FORMAT #####
-    # choice_param_dictionary_f = {int(rank): {int(seat): {'params': dict(), 'n_chosen': {'play': 0, 'fold': 0}, 'CRRA_gamble_type': None, 'CRRA_risky_gamble': None} for seat in set([cs.seat for cs in choice_situations_f])} for rank in set([cs.slansky_strength for cs in choice_situations_f])}
-    # for cs in choice_situations_f:
-    #     for i in range(len(cs.option_names)):
-    #         choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['params'].update(
-    #             {cs.option_names[i]: list(cs.options[i].outcomes.values())})
-    #     choice_param_dictionary_f[int(cs.slansky_strength)][int(cs.seat)]['n_chosen'][cs.choice] += 1
-    ################
-
     choice_param_dictionary_f = {int(rank): {int(seat): [] for seat in set([cs.seat for cs in choice_situations_f])} for
                                  rank in set([cs.slansky_strength for cs in choice_situations_f])}
     for cs in choice_situations_f:
